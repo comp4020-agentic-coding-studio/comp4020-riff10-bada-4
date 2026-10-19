@@ -3,3420 +3,2327 @@
 Durable self-knowledge, curated run by run; ephemeral state belongs in
 `now.md`, not here.
 
-## Environment
+## Environment quirks (this sandbox)
 
-- `agent-browser` needs Chrome installed once per environment
-  (`agent-browser install`) and, in this sandboxed container, the Chrome
-  sandbox itself doesn't work — launches fail with "No usable sandbox!"
-  unless `AGENT_BROWSER_ARGS="--no-sandbox"` is exported first. Command
-  syntax is `agent-browser set viewport <w> <h>`, not `agent-browser
-  viewport <w> <h>`. That `export` (like any env var) does not persist
-  between separate Bash tool calls — only the working directory does —
-  so it has to be set inline in the same command string as the
-  `agent-browser` calls that need it, every time, not as a one-off prior
-  command.
-- `mise install` refuses to run against an untrusted `config.local.toml`
-  the first time in a fresh environment — run `mise trust
-  <path-to-config.local.toml>` once, then install proceeds normally.
-- In this sandboxed container any pnpm command that triggers a deps
-  reconciliation (`check`, `install`, `preview`, `dev`) can abort with
-  `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` (it wants to confirm
-  purging `node_modules` interactively and there's no TTY). Prefix with
-  `CI=true` — `CI=true pnpm preview` — rather than investigating further.
-- On an Astro site whose `base` path is derived from the git origin remote
-  (the `astro-theme-university`-based course-site template does this —
-  `scripts/pages-base.ts`, so it resolves even under a local `pnpm
-  preview`, not just in CI), hitting bare `http://localhost:<port>/` under
-  `pnpm preview` does not 404 visibly — it silently returns Astro's
-  `404.html` body with a `200` status, since nothing is mounted at `/`
-  itself. `curl -o /dev/null -w "%{http_code}"` reports `200` and looks
-  fine; only the actual HTML content (or a tool like Lighthouse trying to
-  load real resources, which failed with a hard "Status code: 404" error)
-  reveals the mismatch. Confirmed on `comp4020-ass2-baishi`
-  (2026-09-15): the real local URL was
-  `http://localhost:4321/comp4020-ass2-baishi/`, read straight off any
-  `href` in `dist/index.html`. Always resolve the real base from a built
-  `dist/index.html`'s hrefs (or `git remote get-url origin`'s repo name)
-  before pointing `curl`, Lighthouse, or `agent-browser` at a local
-  preview server — don't trust a bare `/` to be the site root just because
-  `astro dev`/`preview` "serve at the root" in the sense of not needing a
-  domain change.
-- The installed `agent-browser` has grown two native commands beyond what
-  earlier entries below assume: `agent-browser a11y [url] --json` runs
-  axe-core directly (no more need for the CDN-injection dance described
-  further down), and `agent-browser vitals [url] --json` reports Core Web
-  Vitals (LCP/CLS/TTFB/FCP/INP) plus React hydration info. Confirmed
-  working on assignment-1 (2026-08-14): `a11y` matched the earlier
-  CDN-injected sweep's 0-violations result at both marking viewports, and
-  `vitals` gave a genuinely new signal (CLS score) the manual
-  `performance.getEntriesByType` snippet never captured. Prefer these
-  native commands over the manual techniques logged below when starting a
-  fresh a11y/perf pass; the manual entries stay as fallback in case a
-  future environment lacks them. `inp` came back `null` even after a real
-  keyboard-driven interaction sequence (`focus` + `press`) — plausibly the
-  synthetic/CDP interaction path doesn't feed the INP buffer; not worth
-  chasing further for a single-page static site.
-- `agent-browser -p ios ...` (the touch-emulation provider) fails outright in
-  this sandboxed container: `xcrun simctl` isn't present, since the iOS
-  simulator needs an actual macOS/Xcode host. Confirmed directly
-  (`agent-browser -p ios device list` → "No such file or directory"), not
-  inferred — don't spend a future run's budget retrying touch-specific
-  emulation here expecting a different result; it needs a different host
-  entirely. Plain `agent-browser set device "<name>"` (e.g. `"iPhone 14"`,
-  no `-p ios`) doesn't fill this gap either — confirmed on crit-4
-  (2026-08-19): after setting the device, `navigator.maxTouchPoints` still
-  read `0` and a `click` on a real touch-sized target went through the
-  ordinary mouse pointerdown/up path, not a touch path. Device-mode viewport
-  emulation changes screen size only, not `hasTouch`; genuine multi-touch
-  (e.g. a two-finger chord on a touch instrument) stays untestable here by
-  any means found so far — mouse- and keyboard-driven interaction are what
-  this environment can actually verify. `agent-browser network` also still
-  has no request-delay/throttle
-  primitive (only `route --abort`/`--body`), confirmed again on assignment-1,
-  so a true slow-connection test remains out of reach without extra tooling
-  beyond the CLI.
-- `agent-browser press <key> --hold <ms>` does not reliably sustain the key
-  down for the requested duration in this sandboxed container — confirmed on
-  crit-4 (2026-08-19): a background `press d --hold 2000` followed by a
-  mid-hold `eval` reading `document.activeElement`/a DOM state flag always
-  saw the released state, as if the hold hadn't happened, even though the
-  same page's own `keydown`/`keyup` listeners were verified correct by other
-  means. Don't trust `--hold` to prove or disprove a press-and-sustain
-  interaction (a synth pad held for a chord, a game key held to move). The
-  reliable way to test real sustain: `agent-browser eval
-  "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'x', bubbles:
-  true}))"`, do whatever mid-hold check is needed, then dispatch the matching
-  `keyup` the same way — this actually held the key logically down between
-  the two `eval` calls when `--hold` did not.
-- `pnpm dlx lighthouse <url> --preset=desktop --chrome-flags="--headless
-  --no-sandbox"` needs `CHROME_PATH` set explicitly in this sandboxed
-  container — lighthouse's own `chrome-launcher` can't find a system Chrome
-  (there isn't one), and fails with "The CHROME_PATH environment variable
-  must be set" otherwise. Point it at the Chrome `agent-browser install`
-  already put down:
-  `CHROME_PATH=$(find ~/.agent-browser/browsers -maxdepth 1 -name 'chrome-*'
-  | sort -V | tail -1)/chrome`. Also run it from inside the target repo, not
-  `/tmp` or elsewhere — `pnpm dlx` needs `mise`'s per-directory pnpm version
-  resolution, which fails with "No version is set for shim: pnpm" outside a
-  directory that has one configured.
-- `agent-browser set viewport <w> <h>` does not persist across a later
-  `agent-browser open` in the same session — confirmed on crit-5
-  (2026-08-27): set to 1920×1080, confirmed via `getBoundingClientRect()`,
-  then a second `open` (navigating to a freshly rebuilt page) silently
-  reverted `window.innerWidth`/`innerHeight` to a smaller default
-  (1280×577), which in turn made a coordinate computed against the
-  1920-wide layout land outside the real canvas and `elementFromPoint`
-  return `null` — a real misclick, not a flake. Re-issue `set viewport`
-  after every `open`/reload that follows an earlier one in the same
-  session, not just once at the start.
-- `pgrep -af "<pattern>"` run inline in a Bash tool call can match its own
-  invocation's command-line string, not just the target process — a
-  literal `pgrep -af "vite preview"` matches the shell wrapper that's
-  currently executing the string `"vite preview"` as part of its own
-  `eval`, printing a false-positive "still running" line even after the
-  real target process was actually killed. Confirmed on crit-5
-  (2026-08-31) trying to verify a `pnpm preview` server had shut down.
-  Check a listening port instead (`ss -ltnp | grep <port>`) when
-  confirming a server process is actually down, not a process-name grep.
-  The same asymmetry cuts the other way for actually stopping one: on the
-  final crit-5 run (2026-08-31), `pkill -f "vite preview --port <p>"`
-  silently failed to stop a `pnpm preview`-spawned server even though the
-  process was genuinely still listening afterwards (`ss -ltnp` confirmed
-  it) — plausibly because the real process's visible cmdline, once
-  wrapped through `pnpm`'s script runner, doesn't textually contain the
-  literal script-line string being matched. `ss -ltnp | grep <port>` to
-  get the real pid, then `kill <pid>` directly, worked immediately. Don't
-  trust a bare `pkill -f "<script line>"` to have stopped a pnpm-spawned
-  dev/preview server; get the pid from the port instead.
-  **Extended (`comp4020-final-baishi`, 2026-09-30):** shell job-control
-  (`kill %1`, `%1` referring to a background job started with `&`) doesn't
-  carry across separate Bash tool calls either — each call is a fresh
-  shell with its own empty job table, so `kill %1` in a later call silently
-  no-ops (or errors, harmlessly swallowed by a trailing `2>/dev/null`)
-  rather than killing the process actually intended. The stale process kept
-  running underneath, still holding an open fd to a SQLite file a
-  subsequent `rm -rf` had already unlinked from the directory — writes kept
-  succeeding invisibly against the deleted-but-still-open inode, producing
-  a confusing "count is higher than it should be after a fresh restart"
-  symptom that looked like an app bug (a double-submit) but was actually a
-  test-harness artifact. `ss -ltnp | grep <port>` for the real pid, then
-  `kill <pid>` directly — the same fix as the pkill lesson just above,
-  generalised to background jobs started with plain `&` too, not just ones
-  wrapped in `pkill -f`.
-- A multi-line Bash call wrapping `agent-browser` in a `for ... do ... done`
-  loop can fail outright with "command not found: agent-browser" (exit 127)
-  in this sandboxed container, even though the exact same call as a plain
-  one- or two-line command immediately before and after resolves fine, and
-  `which`/`type agent-browser` confirm `$PATH` is correct right after the
-  failure. Confirmed on `comp4020-ass2-baishi` (2026-09-14) — a transient
-  shell/PATH-resolution quirk specific to that `for`-loop construct, not a
-  real missing-binary problem. Don't debug `$PATH` when this happens; just
-  stop using `for` loops for `agent-browser` calls and issue one or two
-  commands per Bash tool call instead.
-- `agent-browser eval` shares one persistent JS context across calls within
-  the same session — a second `eval` that re-declares a top-level `const`/
-  `let` name already used in an earlier `eval` throws `SyntaxError:
-  Identifier '<name>' has already been declared`, even though each snippet
-  reads fine in isolation. Wrap each `eval` snippet in an IIFE
-  (`(() => { const cs = ...; return ...; })()`) with locally-scoped names so
-  repeated ad hoc DOM-inspection snippets in one session never collide.
-- `agent-browser console` can print debug/prefetch lines that name a
-  completely different repo (e.g. `Prefetching
-  http://localhost:4321/comp4020-ass2-yunlin/sessions/` while the page open in
-  this session was genuinely `comp4020-ass2-baishi`, confirmed via
-  `window.location.href`) — this sandboxed container is shared with other
-  concurrent agent sessions, and console output is not scoped to the one page
-  this session navigated. Confirmed on `comp4020-ass2-baishi` (2026-09-17):
-  the visible page content and `window.location.href` were correctly this
-  repo's own; only the `console` command's output leaked a different
-  student's repo name. Don't read a foreign repo name in `console` output as
-  evidence of contamination in *this* repo's build — cross-check
-  `window.location.href` first, and filter the foreign lines out rather than
-  investigating them.
+- `mise`-shimmed `pnpm`/`node` fail with "config.local.toml ... not trusted"
+  until `mise trust /home/ben/.config/mise/config.local.toml` is run once per
+  environment. That file holds Ben's real API tokens — read it only to
+  confirm it's the expected, pre-existing secrets file before trusting it,
+  never copy its contents anywhere, especially not into a course repo.
+  `corepack pnpm <cmd>` works as a fallback before trust is established, but
+  only for the initial `pnpm install` — `corepack pnpm check` (or any script
+  that shells out to bare `pnpm` internally, as this template's `check` does)
+  fails with a version-mismatch error, because corepack won't switch pnpm
+  versions mid-script once it's already invoked one. Once `mise trust` has
+  run, drop `corepack` entirely and call plain `pnpm` for everything else.
+  Confirmed in `comp4020-crit2-bada` week 3.
+- `agent-browser` needs `agent-browser install` once (downloads Chrome), and
+  every `agent-browser open` needs `--args "--no-sandbox"` — Chromium's
+  zygote sandbox doesn't work in this container and the browser otherwise
+  fails to launch at all.
+- `agent-browser screenshot <path> --full` — the flag is `--full` (or `-f`),
+  NOT `--full-page`. The wrong flag gets silently treated as a second
+  positional arg, and a stray file literally named `--full-page` lands in
+  the cwd. Check `git status` for it before the first commit of a session.
+- `agent-browser open <url> --viewport WxH` is not a real flag — `open --help`
+  doesn't list it, and passing it doesn't error, it's just silently ignored,
+  so two screenshots taken "at" 1920×1080 and 390×844 came back byte-identical
+  (both at whatever the default viewport was) until I diffed the file sizes
+  and noticed. The real command is `agent-browser set viewport <w> <h>`, kept
+  for the rest of the browser session. Confirmed in `comp4020-crit1-bada`
+  week 2: always sanity-check a "different viewport" screenshot pair actually
+  differs (dimensions or at least file size) before trusting it as evidence a
+  layout was checked at both marking viewports.
+- Ordering matters for the above: call `set viewport` *after* the first
+  `agent-browser open --args "--no-sandbox"`, not before. With no page open
+  yet, `set viewport` tries to launch its own throwaway browser without the
+  sandbox flag and dies on the same zygote error as an unflagged `open`.
+  Confirmed in `comp4020-crit1-bada` week 2, ~46.5h-to-cutoff verification
+  run: `open` first, then `set viewport`, then `screenshot`.
+- Re-running the full `pnpm check` locally (not just CI) needs `CHROME_PATH`
+  exported to the `agent-browser`-downloaded Chrome, or the Lighthouse spec
+  errors outright (`chrome-launcher` can't auto-detect a system Chrome that
+  doesn't exist in this sandbox) rather than being skipped:
+  `export CHROME_PATH=$(find ~/.agent-browser/browsers -maxdepth 2 -iname
+  'chrome*' -type d | head -1)/chrome`. CI doesn't need this — it has a real
+  system Chrome. Confirmed in `comp4020-crit1-bada` week 2.
+- `agent-browser`'s dark-mode/reduced-motion emulation is `set media dark`,
+  not `media dark` — `--help` lists it under the `set` block (`media
+  [dark|light] [reduced-motion]`) but a bare `agent-browser media dark`
+  returns "Unknown command" without erroring loudly in a way that's easy to
+  miss in a longer command chain. Same shape as the `set viewport` gotcha
+  above: always confirm the subcommand needs the `set` prefix before trusting
+  a one-off flag from the top-level help summary. Confirmed in
+  `comp4020-ass1-bada` week 4.
+- A real keyboard-only pass is checkable directly, not just inferable from
+  markup: `agent-browser eval "document.activeElement.tagName + '#' +
+  document.activeElement.id"` before/after repeated `agent-browser press Tab`
+  reconstructs the actual tab order (and shows whether a `role="img"`/no-
+  `tabindex` element is correctly skipped, vs. accidentally reachable or
+  trapping focus); `agent-browser press ArrowRight` (or Left/Home/End) after
+  focusing a specific element, then `eval` on the state it should have
+  changed, confirms a native control's keyboard path actually drives the
+  page rather than assuming "it's an `<input type=range>` so keyboard works
+  for free." Used to confirm a pointer-drag affordance layered on top of an
+  already-keyboard-accessible slider didn't need its own keyboard handling —
+  a real check that turned up nothing to fix, which is a legitimate outcome,
+  not a wasted one. Confirmed in `comp4020-ass1-bada` week 4.
+- A hand-built `new PointerEvent(...)` dispatched via `agent-browser eval`
+  with `document.dispatchEvent`/`window.dispatchEvent` does NOT route through
+  a prior `element.setPointerCapture(pointerId)` call — the listener actually
+  bound to that element never fires, so a synthetic "drag" silently does
+  nothing while looking like it ran (no error, a plausible-looking readout
+  left over from an earlier real event). This gave a false pass when
+  re-testing a pointer-capture-based drag interaction mid-viewport-resize in
+  `comp4020-ass1-bada` — the fix was to drive it with `agent-browser mouse
+  move <x> <y>` / `mouse down` / `mouse up` instead, which are real synthetic
+  input events the browser routes normally through pointer capture. Any test
+  of a `setPointerCapture`-based drag must use `agent-browser mouse ...`, not
+  a constructed-and-dispatched `PointerEvent`. Confirmed in
+  `comp4020-ass1-bada` week 4, re-verifying against the production build
+  (`vite preview`) rather than the dev server.
+- `agent-browser mouse move/down/up` always dispatches with
+  `event.pointerType === "mouse"`, even with `set device <touch-capable-name>`
+  active first — device emulation changes viewport/UA/`hasTouch`, not what
+  kind of pointer event the `mouse` commands generate. There is no CLI-level
+  touch/swipe dispatch; the only touch-capable channel is a WebSocket
+  `input_touch` message meant for the dashboard/MCP streaming surface, not a
+  plain subcommand. So "does this actually work with a real touch drag" is
+  not checkable from this CLI without building a client for that channel —
+  confirmed by adding a temporary `pointerdown` listener recording
+  `e.pointerType` before driving a `mouse` drag, at 390×844 against a
+  production build, in `comp4020-ass1-bada` week 4. Don't spend time trying
+  `set device` + `mouse` again expecting a touch-typed event.
+- `gh` has no stored auth in this sandbox (`gh repo view`/`gh run list` both
+  fail with "please run gh auth login", exit code 4) — so repo visibility and
+  CI-run status aren't checkable that way here. `curl -s -o /dev/null -w
+  "%{http_code}"` on the live Pages URL is the fallback for "has this repo
+  shipped (gone public) and deployed yet" — a 404 there is expected and not a
+  bug for as long as the repo is still private (doctrine: CI/Pages stays
+  skipped pre-ship). Confirmed `comp4020-ass1-bada` week 4, 21h-to-cutoff run.
+- `agent-browser screenshot --full` resizes the page to capture the full
+  scrollable height, which fires a real `resize` event on `window` — if a
+  `<canvas>`-based page has a resize handler that recomputes `canvas.width`/
+  `canvas.height` from the element's layout box (the normal, correct way to
+  keep a canvas crisp across viewport changes), setting those attributes
+  clears the canvas's drawn content as a side effect of the HTML canvas spec,
+  not a bug in the page. A `--full` screenshot taken right after drawing to a
+  canvas can come back showing an empty canvas even though the draw call
+  worked. Don't conclude "nothing rendered" from a `--full` screenshot of a
+  canvas alone — cross-check with a plain `screenshot` (no `--full`, no
+  resize) or with `ctx.getImageData(...)` on the specific pixel first. Found
+  and confirmed this way in `comp4020-crit4-bada` week 5: `getImageData`
+  showed the correct drawn colour at the exact drag coordinate while a
+  `--full` screenshot taken moments later showed nothing, and a same-moment
+  non-`--full` screenshot showed the dot correctly.
+- A synthetic `PointerEvent` dispatched via `agent-browser eval` with a
+  pointerId other than the real mouse's own makes
+  `element.setPointerCapture(pointerId)` throw `NotFoundError: No active
+  pointer with the given id is found` — Chromium's real mouse pointer is
+  always pointerId `1` (so events built with `pointerId: 1` route through
+  capture fine), but any other id (`2`, `3`, ...) isn't a real "active"
+  pointer from the browser's perspective and throws. Use pointerId `1` when
+  simulating the actual pointer via synthetic events. This also surfaces a
+  production-code risk worth checking on any page that calls
+  `setPointerCapture`: if it throws and runs *before* the code that actually
+  starts the effect it's guarding (a sound, a drag, a draw), the whole
+  handler aborts silently — wrap the capture call in try/catch so a capture
+  failure degrades gracefully instead of eating the interaction. Found and
+  fixed this way in `comp4020-crit4-bada` week 5 (`de810ef`): `setPointerCapture`
+  ran before `startVoice` in the pointerdown handler, so a throw there would
+  have hidden the hint text (already unconditional) while producing no sound
+  at all — the exact silent-failure shape the crit's brief rules out.
+- Reading a live `AudioParam.value` right after scheduling a
+  `setTargetAtTime`/ramp doesn't confirm the automation is doing anything in
+  this headless sandbox — `AudioContext.currentTime` never advances here
+  without a real audio output device, so `.value` reads back as its initial
+  value forever even when the scheduled automation is completely correct.
+  Verify automation by tracing the *call* instead: monkey-patch
+  `AudioParam.prototype.setTargetAtTime` (or whichever method) via an
+  `--init-script`, same technique as patching `window.AudioContext` to count
+  node creation, and read back the `target` argument each call was scheduled
+  with. Confirmed in `comp4020-crit4-bada` week 5 (`de810ef`) verifying a
+  speed-driven vibrato-depth parameter: `.gain.value` read `0` at every
+  check, but the traced calls showed the correct target (~0.8 cents for a
+  slow move, clamped to 40 cents for a fast one) — the feature worked, the
+  read-back method was just the wrong probe.
+- Course automation can rewrite a repo's course-owned surface mid-deliverable
+  without the agent doing anything — `comp4020-crit4-bada` week 5 opened its
+  fifth run to find a commit already sitting at the tip
+  (`starter: bring the course-owned checks forward to the template tip`,
+  `7da64d2`, authored by "COMP4020 course automation") that had landed
+  between runs, dropping `oxlint`/`stylelint` out of `pnpm check`, rewriting
+  `check-evidence.ts` to work offline, and adding a meta-description +
+  og:image requirement to `spec/invariants.test.ts` plus a placeholder
+  `public/card.png`. Nothing in the routine caused this; it showed up as
+  already-committed history. Lesson: don't assume the check suite's shape
+  (what `pnpm check` runs, what `check:evidence` requires) is stable across
+  runs on a long-open deliverable — re-read `package.json`'s `check` script
+  and `spec/README.md` each run rather than trusting a previous run's memory
+  of what the checks cover, since the course side can move the goalposts
+  forward without touching this repo's own commits.
+- `agent-browser open ... --init-script <path>` takes a **file path**, not
+  inline JS text — passing a JS string directly (e.g. to monkeypatch
+  `OscillatorNode.prototype.start`/`.stop` for a call-counting check) silently
+  no-ops: no error, the page loads fine, and the globals the script was
+  supposed to set (`window.__starts`, etc.) just read back as `undefined`
+  forever, which looks identical to "the script ran but the count stayed
+  zero." Always `Write` the script to a temp file first and pass that path.
+  Confirmed in `comp4020-crit4-bada` week 6: a rapid keyboard-retrigger check
+  (5 fast keydown/keyup pairs on the same key, verifying start/stop counts
+  match 1:1 with no stuck notes) read `typeof window.__starts === "undefined"`
+  with the inline-string form and only started working once rewritten to a
+  file path — same "looks-like-a-pass, isn't" shape as the earlier
+  `AudioParam.value` read-back gotcha in this file, worth checking any
+  `--init-script` invocation the same way before trusting a zero/undefined
+  result.
+- A browser session that already ran one `agent-browser eval`-dispatched
+  interaction (a keydown, a click) is no longer in a true cold-open state for
+  a *later* screenshot in the same session — any one-shot "before first
+  interaction" flag the page sets (idle animation, hint text) has already
+  flipped, so a screenshot taken afterwards shows the post-interaction page
+  even though nothing was screenshotted in between. Looked like a rendering
+  bug (idle glow and hint text both missing) in `comp4020-crit4-bada` week 6
+  until re-running `agent-browser close` + a fresh `open` produced the actual
+  cold view. Always open a fresh session (or verify no prior eval/dispatch
+  ran in this one) before trusting a "does the cold-open state look right"
+  screenshot.
+- The `--init-script`-monkeypatch technique (see the entry above this one)
+  generalises past tracing `AudioParam`/oscillator call arguments to counting
+  node *creation and disposal*: patch `AudioContext.prototype.createOscillator
+  /createGain/createBiquadFilter` etc. to increment a counter and wrap the
+  returned node's `.stop`/equivalent to increment a second counter, then hold
+  a note (or a chord) for several real seconds and diff the counts before vs.
+  after. Confirmed clean (no growth, stop-count matched voice-count exactly)
+  in `comp4020-crit4-bada` week 6 checking whether a long-held note or chord
+  leaks nodes or drifts — a real check with a legitimate "found nothing"
+  result, not a rubber stamp, since the technique would have caught actual
+  growth had the code re-created nodes per frame for held notes.
+- A sixth cold-open pass on `comp4020-crit4-bada` (run 11, week 6, `2fb9c06`)
+  found a discoverability gap distinct from the earlier keyboard-hint-content
+  bug in this file: at a 1280×577 viewport (a real laptop shape once browser
+  chrome eats vertical space, not an exotic device), the hint `<p>` sat in
+  normal page flow directly below a canvas sized `min(70vh, 32rem)` — on that
+  viewport the two together don't fit above the fold, so the only visible
+  pre-interaction affordance was the idle glow blob, with no scroll indicator
+  hinting there's text below. A blind subagent playtest still managed to play
+  the instrument (it tried mouse/keyboard regardless), but a stranger who
+  needed the hint to know *which* keys work would have missed it entirely.
+  Confirmed by comparing screenshots at 1280×577 (hint y≈584, viewport ends
+  577) vs. 1366×768 (hint fully visible). Fixed by making the hint an
+  `absolute`-positioned, `pointer-events: none` overlay inside a
+  `position: relative` wrapper around the canvas, instead of a flow sibling
+  below it — this guarantees the hint is visible whenever the play surface
+  itself is, independent of page height/viewport, rather than trying to
+  compute a canvas height that leaves just enough room. General check: any
+  page whose primary interactive surface is viewport-height-relative
+  (`vh`/`dvh` sizing) and has a *second*, separate element a stranger needs
+  to see before interacting (a hint, a call-to-action) should overlay that
+  element on the primary surface rather than stack it in flow after — stacking
+  only works for viewports at least as tall as the one it was eyeballed at.
+- Sandbox quirk, not project-specific: a `pnpm dev &`-style background job
+  started via one Bash tool call is not reliably visible to `jobs -l`/`kill
+  %1` in a *later*, separate Bash tool call in the same session — each Bash
+  invocation can get a fresh subshell, so job-control state doesn't carry
+  over the way it would in one continuous interactive terminal. `jobs -l`
+  came back empty and `kill %1` silently no-op'd on a vite dev server that
+  was still very much running and serving requests (confirmed via `curl` and
+  `ps aux | grep vite`) in `comp4020-crit4-bada` run 11. Always verify a dev
+  server is actually stopped by PID (`ps aux | grep <tool>` then `kill <pid>`,
+  then re-`curl`/re-`ps` to confirm) rather than trusting `jobs -l`/`kill %N`
+  to have found it, when "dev server was shut down" needs to be true, not
+  just attempted.
+- Running `agent-browser` directly in the main run's own shell *while* a
+  background subagent's prompt also tells it to drive `agent-browser`
+  against the same local dev-server URL produces a corrupted report from
+  the subagent — they contend for the same underlying browser
+  instance/session rather than each getting an isolated one. In
+  `comp4020-crit5-bada` week 6, a "blind cold-open playtest" subagent was
+  launched in the background at the same moment the main run started using
+  `agent-browser` itself (screenshotting mid-play frames to build a link-
+  preview card) against the same `localhost:5183` dev server. The subagent's
+  report came back describing behaviour that flatly contradicted the source
+  and the actual live page — "the game auto-starts on page load with no
+  click needed" and "ArrowUp and Enter do nothing at all" — both falsified
+  within seconds by opening a fresh session serially afterward (a true cold
+  open sat at score 0 doing nothing until input; ArrowUp and Enter both
+  jumped and scored exactly like Space). The most likely cause: the main
+  run's concurrent screenshot/keypress traffic bled into what the subagent's
+  own `agent-browser` calls were observing, so it was reporting on a
+  contended, cross-talking session, not a real isolated cold-open one. One
+  claim from the same corrupted report *did* independently reproduce by hand
+  afterward (a restart press leaving the score readout frozen at the dead
+  run's number) — so a corrupted report isn't necessarily 100% fabricated,
+  but nothing in it can be trusted without a serial, single-session
+  re-check. General rule: never drive `agent-browser` from the main thread
+  while a background subagent's task also drives `agent-browser` at the
+  same URL/port — either wait for the subagent to finish before touching
+  the browser yourself, or give it a separate dev-server port so the two
+  sessions can't collide.
+- `pkill -f "<pattern>"` can match only the wrapper shell process a
+  background job was launched under, not the real long-running process it
+  execs — a `pnpm dev &`-style background start with `run_in_background`
+  shows up in `ps aux` as `sh -c vite --port 5185`, so `pkill -f "vite
+  --port 5185"` kills that wrapper (which the pattern matches) while the
+  actual `node .../vite.js --port 5185` child it spawned keeps running and
+  keeps the port listening — `curl` to the port still returns 200 after the
+  "kill" with no error from `pkill` itself. Confirmed in
+  `comp4020-crit5-bada` week 6, run 5. Always verify a dev server is truly
+  down by re-`curl`ing (or `ss -ltnp`/`lsof -i :<port>` for the real
+  listening PID) after any kill, the same discipline already recorded above
+  for `jobs -l`/`kill %1` not finding a backgrounded job — and if the target
+  process is still there, resolve the actual listening PID from `ss`/`lsof`
+  and `kill` that PID directly rather than retrying the same `pkill -f`
+  pattern.
+- The `agent-browser` daemon can silently restart itself mid-session
+  ("Daemon version mismatch detected, restarting...") after several quick
+  separate CLI calls (`eval`/`press`/`open` in a tight loop), and the
+  restarted daemon does *not* remember `--args "--no-sandbox"` from the
+  `open` that started the original session — the very next `open` (even to
+  the same URL) fails outright with the zygote-sandbox `FATAL` error this
+  file already documents, even though nothing about the sandbox itself
+  changed. It looks like an unrelated regression of the original
+  no-sandbox fix but isn't. Fix: `pkill -f agent-browser` to clear the
+  stray daemon, then re-`open` with `--args "--no-sandbox"` again. Better
+  prevention: batch a multi-step timed check into one `eval --stdin`
+  script (using in-page `setTimeout`/`sleep`-via-promise and
+  `KeyboardEvent`/`performance.now()`) instead of many separate quick CLI
+  round-trips, which both avoids triggering the restart and is more
+  precise for timing-sensitive checks anyway. Confirmed in
+  `comp4020-crit5-bada` week 6, run 9, verifying a death→restart cooldown
+  window (dispatched `keydown Space` to start a run, waited for a real
+  death, tried an immediate restart — correctly blocked — then one after
+  the 0.6s cooldown — correctly allowed — all inside one `eval` call).
 
-- `agent-browser fill`/`click`+`type` do not reliably populate an
-  `<input type="time">` element in this sandboxed container — confirmed on
-  `comp4020-crit7-baishi` (2026-09-24): `fill '#startTime' '09:00'` reported
-  success, but `eval`-reading `document.getElementById('startTime').value`
-  immediately after returned `""`; clicking the field then typing a plain
-  string (`'0900AM'`) left it empty too. Time inputs apparently need a
-  different synthetic-input path than text inputs get from `fill`/`type`.
-  Workaround: set `.value` directly via `eval` and dispatch synthetic
-  `input`/`change` events with `bubbles: true`
-  (`el.value = '09:00'; el.dispatchEvent(new Event('input', {bubbles:
-  true})); el.dispatchEvent(new Event('change', {bubbles: true}))`) — this
-  populated the field correctly and a subsequent `requestSubmit()` carried
-  the right values through to the server. Don't spend time debugging `fill`
-  itself against a `type="time"` field; reach for this workaround directly.
+- `agent-browser tab switch t1` is not valid syntax --- `tab --help` shows
+  no "switch" keyword; the command is `agent-browser tab <t1|label|target>`
+  directly. `tab switch t1` errors with "No tab with label 'switch'", and if
+  it's one line in a longer batch, the *next* command in that batch silently
+  keeps running against whichever tab was already active rather than the
+  one you meant to switch to. In `comp4020-crit7-bada` week 1 this
+  accidentally sent a booking-form submit to tab t2 instead of t1 --- no
+  lasting harm here since it happened to double as a real test of the
+  cross-tab SSE update (t1's own `EventSource` live-patched to "Full" with
+  no reload, confirming the feature), but don't rely on an accidental
+  mis-target to double as a test; fix the syntax and drive tabs
+  deliberately.
 
-- `docker build`/`docker run` need `sudo` in this sandboxed container — the
-  session user isn't in the `docker` group (confirmed via `id`), so a plain
-  `docker build` fails with "permission denied while trying to connect to
-  the docker API" even though `/var/run/docker.sock` exists and the daemon
-  is reachable. `sudo docker build`/`sudo docker run` (with
-  `dangerouslyDisableSandbox: true` on the Bash call, since sudo itself
-  needs it) works immediately — passwordless sudo is available. Confirmed
-  on `comp4020-final-baishi` (2026-09-30) testing the exact
-  `docker build`/`docker run --tmpfs /data` sequence CI's `checks.yml` runs,
-  before trusting a `flyctl deploy`.
-- **A native module with a `binding.gyp` gets an implicit `node-gyp
-  rebuild` on install even with no install script** (npm and pnpm both
-  default to it), whenever its build is allowed (`allowBuilds` in
-  `pnpm-workspace.yaml`). `better-sqlite3@13` bundles `prebuilds/` and
-  loads them ahead of `build/`, so on `comp4020-final-baishi` the right
-  setting is `better-sqlite3: false`, and the image needs no Python or
-  compiler. Whether the rebuild runs also varied by pnpm version (11.9
-  ran it, 12.10 didn't), and a bare `corepack enable` fetches npm's
-  floating `latest`, so CI's docker build broke with no commit to blame.
-  Pin pnpm in the Dockerfile to `mise.toml`'s version
-  (`corepack install -g pnpm@<v>`). Local Docker here has no buildx; to
-  build with BuildKit like CI, download the buildx binary into a scratch
-  `DOCKER_CONFIG=<dir>/cli-plugins/` and run `sudo env DOCKER_CONFIG=<dir>
-  DOCKER_BUILDKIT=1 docker build`.
-- A bare SVG `<path d="M x y">` (a moveto with no drawing command at all)
-  has **no paintable geometry** — Chromium renders nothing for it, even
-  with `stroke-linecap: round` set, even though the path element exists in
-  the DOM with a valid `d` attribute. A single-point mark (a tap, a dot)
-  needs a zero-length `L` to the same point (`M x y L x y`) before a round
-  linecap actually draws a dot on screen. Found on `comp4020-final-baishi`
-  (2026-09-30) by a real `agent-browser` pointerdown-then-immediately-up
-  test of a freehand-drawing feature: the stroke saved correctly (valid
-  `d` in the database) and the count updated, but the mark was invisible on
-  reload — a rendering-only bug no HTTP-level spec test would ever catch,
-  since the server-stored data was completely correct. Worth checking
-  whenever a future crit captures freehand/pointer input as an SVG path and
-  needs to support a degenerate single-point case (a tap, a click without
-  drag) — don't assume "valid path syntax" implies "visible."
+- Fly's `auto_stop_machines` doesn't stop a machine while any connection is
+  still open --- confirmed on `comp4020-crit7-bada` (week 8) by watching
+  `flyctl status` hold `started` for 14+ minutes with one SSE tab open, then
+  drop to `stopped` within about a minute of closing it. That reframes any
+  "does the live SSE connection survive the machine auto-stop cycle"
+  question: an open tab can't be sitting there *while* the machine stops out
+  from under it, because the open stream itself is what prevents the stop.
+  The real risk one level over is the *reconnect* gap: a plain in-memory
+  `EventEmitter`/pub-sub bus (no backlog) plus a bare `new EventSource(url)`
+  client with no resync-on-reconnect logic means any disconnect --- a network
+  blip, or *every* Fly redeploy, which restarts the machine and drops every
+  open SSE connection --- followed by the browser's automatic reconnect
+  leaves a tab subscribed only to *future* events, silently missing anything
+  that happened during the gap until a manual reload. Reproduced concretely
+  against a local dev server (never against live production booking data,
+  which had no delete/cancel, so a test booking there would've been a
+  permanent, visible piece of junk at the crit): kill the server process,
+  restart it, and fire the state-changing request within ~1ms of the port
+  responding again --- well inside the browser's ~3s default `EventSource`
+  retry delay --- and the already-open tab keeps showing the stale value
+  indefinitely (readyState back to OPEN, zero errors, looks completely
+  healthy) even though the underlying data changed. Fixed generally: have
+  the SSE endpoint's connection-open handler enqueue one full-state snapshot
+  message (matching whatever shape the client already parses per update) for
+  every current entity, *before* subscribing to the live bus, so every
+  connect and every reconnect gets a same-value no-op or a corrective resync
+  automatically, no client-side change needed. Re-ran the identical tight
+  race against the fix and the tab picked up the true state immediately.
+  General check for any SSE/live-update feature backed by a backlog-less bus:
+  don't just test "does a message sent while connected arrive" (the standard
+  spec-test shape, e.g. `spec/bookings.test.ts`'s own broadcast test) — test
+  "does a message sent during a disconnect-then-reconnect gap ever arrive,"
+  since those are different guarantees and only the second one is what
+  "every open tab sees the truth" actually requires.
 
-- `html-validate`'s `aria-label-misuse` rule doesn't consult SVG-AAM's
-  implicit-role resolution, even though the tool's *own* `no-redundant-role`
-  rule proves it has that resolution available internally — a roleless
-  `<svg>` whose implicit default role (`graphics-document`, per the SVG-AAM
-  spec) genuinely supports an accessible name still gets flagged, because
-  `aria-label-misuse`'s permitted-element allow-list only checks the
-  declared role attribute, not the resolved one. Confirmed on
-  `comp4020-final-baishi` (2026-10-02) by testing the tool against its own
-  stated reasoning rather than trusting one rule's verdict: adding the
-  implicit role back explicitly (`role="graphics-document"`) swapped the
-  error for `no-redundant-role` on the very same element — proof the tool
-  does resolve the implicit role elsewhere, it just doesn't share that
-  resolution between its own rules. No markup satisfies both rules at
-  once; the only way to silence `aria-label-misuse` here would be
-  `role="img"`, which is the exact suppression bug a prior fix on this
-  same `<svg>` (see the dedicated entry above: `role="img"` flattens every
-  focusable descendant out of the accessibility tree) had already removed.
-  Left as a confirmed tool limitation, not a real defect — the general
-  check for any future `html-validate` finding on an `aria-label`/role
-  combination: try the suggested fix against a throwaway copy of the
-  rendered HTML first and see whether a *different* rule in the same tool
-  immediately re-flags it, before trusting either verdict alone.
+- The SSE-resync fix above was only ever verified against a killed-and-
+  restarted local dev process; the next run on `comp4020-crit7-bada` (week 8,
+  run 6) closed that gap by verifying it against a real `flyctl deploy`
+  against production. Technique: open the live `*.fly.dev` URL with
+  `agent-browser --init-script` wrapping `window.EventSource` in a `Proxy`
+  that logs every `open`/`message`/`error` event with a timestamp to
+  `window.__sseLog` (needs the file-path form of `--init-script`, per the
+  existing gotcha in this file — an inline string silently no-ops), confirmed
+  the initial 5-session snapshot arrived on connect, then ran a real
+  `flyctl deploy --remote-only --ha=false` against the *already-deployed*
+  commit (a harmless no-op redeploy, not a code change) while the tab stayed
+  open. The trace showed a real `error` event (readyState 0) ~1 minute in as
+  the machine restarted, then the browser's own automatic reconnect firing
+  `open` plus a fresh 5-message snapshot ~16s later — confirming the
+  resync fires over Fly's real rolling-deploy machine-restart path, not just
+  a local `kill`/restart of the dev process, which is a different (if
+  related) failure mode. No code change needed; this was pure verification
+  of an already-shipped fix. General technique: this generalises the
+  monkeypatch-via-`--init-script` tracing pattern used elsewhere in this file
+  for `AudioParam`/oscillator calls to browser-native network primitives
+  (`EventSource`, presumably also `fetch`/`WebSocket`) via a `Proxy` around
+  the constructor — useful whenever "does X survive a real reconnect/retry"
+  needs a timestamped event log rather than a single before/after snapshot.
+- A second blind cold-open pass on `comp4020-crit7-bada` (week 8, run 6),
+  same source-inaccessible subagent protocol as run 3, against the local dev
+  server (never production, which still has no delete/cancel) came back
+  clean again — purpose obvious unaided, booking persists on reload,
+  duplicate/full/empty-name error cases all handled clearly, live two-tab
+  sync confirmed within ~3.4s, mobile viewport clean, full keyboard-only
+  flow worked end to end, zero console errors. One soft nitpick flagged (a
+  stale success banner lingering after a blocked empty-field submit) turned
+  out not to be a bug on inspection: the notice banner is server-rendered
+  from a `?booked=1`/`?error=...` query param on a traditional full-page-
+  reload form, and a submission blocked by native HTML5 `required`
+  validation never navigates at all — no request is sent, so the page never
+  re-renders, so of course the old banner is still the DOM's last real
+  state. Nothing false is being claimed; the banner accurately reflects the
+  last real server response. Logged as a second consecutive clean pass, same
+  calibration point as the crit-4/crit-5 "sixth clean pass is legitimate
+  evidence, not proof of an inadequate test" lesson elsewhere in this file —
+  don't force a bug into existence to justify the testing round.
+- A seventh `comp4020-crit7-bada` run (week 8) tried a code-level edge case
+  a playtest can't reach: `bookings.ts`'s `POST` handler calls
+  `bus.emit("booking", ...)` synchronously, outside the transaction, right
+  after a successful `bookSession` — and `events.ts`'s listener calls
+  `controller.enqueue(...)` directly, with no try/catch. Node's
+  `EventEmitter.emit` is synchronous, so a throw inside any one listener
+  (e.g. from writing to a tab whose connection just died) would propagate
+  straight back into the POST handler *after the booking had already
+  committed* — a worse failure than a lost broadcast, since the user would
+  see a 500 for a booking that actually succeeded, and any listener
+  registered after the throwing one would miss the event entirely. Tested
+  for real with a raw `net.Socket` (not `agent-browser` — this is a
+  server-side Node question, not a browser one): opened a real SSE
+  connection with a bare TCP socket, then `socket.resetAndDestroy()`'d it
+  (a genuine RST, not a graceful FIN) with zero delay before immediately
+  firing a booking, to catch the narrowest possible window before the
+  server could notice the disconnect. No throw, no 500, other tabs
+  unaffected — `controller.enqueue()` only queues into the stream, it
+  doesn't synchronously write to the socket, so a dead connection surfaces
+  as an async stream error, never a synchronous throw back through
+  `emit()`. Went one step further to check for a *slower* failure mode
+  (a leaked listener/orphaned `setInterval` if `cancel()` never fires for
+  an RST specifically, since `cancel()` is normally documented for
+  cooperative unsubscribes like `reader.cancel()`): temporarily added
+  `console.error` tracing to `start()`/`cancel()` (reverted before
+  committing, never shipped) and confirmed via `astro dev logs` — not the
+  wrapper process's own stdout, since `astro dev` daemonizes and forking
+  the visible CLI process's log misses the real server output entirely —
+  that every abrupt-RST connection still gets a `cancel()` call and the
+  listener count returns to exactly 0 every time. Confirmed clean, no code
+  change. General technique for any future SSE/EventEmitter-based
+  broadcast: test the disconnect path with a raw socket RST, not just
+  `reader.cancel()` or closing the fetch response — they exercise
+  different code paths, and only the raw-socket route asks the real
+  question of what an actual dropped connection (not a cooperative one)
+  does to the emit()/enqueue() chain.
+- An eighth `comp4020-crit7-bada` run (week 8) tried a different angle after
+  two clean cold-opens, a verified SSE-resync fix, and a verified-clean
+  RST-disconnect edge case: a formal real-browser accessibility pass, which
+  no prior run on this repo had done. `agent-browser a11y <url> --json` is a
+  built-in axe-core runner (no need to fetch axe-core from a CDN and pipe it
+  through `eval --stdin`, the technique this file documents for projects
+  without that command) — ran it against both pages (`/`, `/readme/`) at
+  both a desktop and the 390×844 mobile viewport: 0 violations, 0
+  `incomplete` every time, including for colour contrast, which a real
+  browser (unlike jsdom) can actually resolve. Followed with a real keyboard
+  interaction test the axe scan itself can't do: focused the first session's
+  name input, typed via `agent-browser keyboard type` (real keystrokes, not
+  `.value =`), submitted with `agent-browser press Enter` (no click, no JS
+  shortcut), and confirmed the booking landed (`?booked=1` redirect, name
+  present in the DOM) — the native `<form method="post">` really does work
+  keyboard-only end to end. Then tabbed from a fresh cold load
+  (`agent-browser press Tab` + reading `document.activeElement` and its
+  computed `outlineStyle`, the same technique already documented in this
+  file for reconstructing tab order): nav links, then straight into the
+  first open session's name input and book button, every stop showing a
+  visible outline — no `all: unset`-style reset stripping focus visibility
+  anywhere on this page, unlike the theme-level bug found on
+  `comp4020-ass2-bada`. All clean, no code change — a real checked result
+  (the same calibration as the two-clean-cold-opens entries elsewhere in
+  this file: a formal a11y/keyboard pass that finds nothing is legitimate
+  evidence once several other angles are already covered, not proof the
+  check was too shallow). Worth remembering `agent-browser a11y` as the
+  first thing to reach for over the manual CDN-fetch-and-eval technique on
+  any future deliverable, only falling back to the manual route if `a11y`
+  isn't available or doesn't cover what's needed (e.g. scoping to one
+  `--selector`, or `--tags` for a specific WCAG level).
+- A ninth `comp4020-crit7-bada` run (week 8, `36417f9`) found a second layer
+  under the case-fold duplicate-name fix (`dc0d99a`): SQLite's built-in
+  `lower()` only folds ASCII, so the generated `person_name_key` column and
+  the app-level JS `.trim().toLowerCase()` pre-check in `bookSession`
+  quietly disagreed on any non-ASCII name — booking "FRANÇOIS" then
+  "françois" into the same capacity-2 session succeeded as two different
+  people both at the app-level pre-check *and* the unique index itself
+  (each side folds the accented character differently, so neither ever sees
+  a collision), overbooking a session the schema's own comment says can
+  never overbook. Confirmed with a vitest probe calling `bookSession`
+  directly before touching the schema, the same escalation-order as the
+  ASCII case-fold bug: verify empirically before design work. Real-world
+  relevance for an ANU-context app: French/Vietnamese/Spanish/Nordic names
+  with diacritics are common among the actual student population this app
+  models. Fixed by registering a custom deterministic SQL function
+  (`client.function("name_key", { deterministic: true }, (name) =>
+  String(name).trim().toLowerCase())`, better-sqlite3's API) and pointing
+  the generated column at it instead of built-in `lower(trim(...))`, so both
+  sides fold case identically by construction rather than by coincidence.
+  General lesson for any schema mixing a SQL-computed key with an
+  app-level pre-check meant to mirror it: don't assume a built-in SQL string
+  function agrees with the host language's equivalent for non-ASCII input —
+  verify with a throwaway probe (`db.prepare("select lower('FRANÇOIS')")`)
+  before trusting the two stay in sync, and if they don't, back the
+  generated column with a custom function built from the *same* host-language
+  call the app already makes, rather than hand-porting Unicode case-folding
+  rules into SQL. Second, sharper gotcha hit generating the migration:
+  `drizzle-kit generate` for a change to a generated column's *expression*
+  (not just its mode) emitted `ALTER TABLE ... DROP COLUMN person_name_key`
+  before dropping the unique index that references that column — SQLite
+  rejects this outright (`error in index ... after drop column: no such
+  column`), confirmed by booting the built server against the migration
+  and getting a 500 on every request, not a boot-time crash (astro's build
+  succeeds; the migration only runs lazily on first `getModuleForRoute`).
+  Fixed by hand-editing the generated migration to `DROP INDEX` first, then
+  `DROP COLUMN`/`ADD ... GENERATED`, then `CREATE UNIQUE INDEX` again —
+  drizzle-kit does not order these safely on its own for SQLite, so any
+  future change to a *generated* column's expression on a column that's
+  also indexed needs this same manual reordering, not just the earlier
+  `stored`-vs-`virtual` mode gotcha already in this file. Verified the real
+  upgrade path end to end before deploying: booted a throwaway DB through
+  the *old* migration set, booked a real "FRANÇOIS" row via the actual
+  built server's `/api/bookings` POST endpoint (needs an `Origin` header
+  matching the request URL — Astro's CSRF check 403s a bare `curl` POST
+  with none), then rebooted the *new* build against that same database
+  file and confirmed the migration applied cleanly and a same-person
+  differently-cased booking now correctly redirects to
+  `?error=duplicate`. Also re-verified live against production before
+  deploying (`flyctl machine start` + `flyctl ssh console` running a
+  `node -e` one-liner against `better-sqlite3`, same technique as the
+  previous run) that the volume still held zero real bookings, so the new
+  index couldn't conflict with anything already on disk. One test-authoring
+  gotcha worth its own line: this repo's `spec/bookings.test.ts` tests run
+  sequentially against one shared seeded database and several tests assume
+  whatever session `findSessionWithSpareCapacity()` returns is otherwise
+  *empty* (computing filler counts as `capacity - 1`, not
+  `capacity - booked - 1`) — a new test inserted earlier in the file that
+  leaves its own session partially booked (rather than fully filling or
+  fully avoiding it) silently breaks a *later* test's arithmetic with no
+  connection to what that later test is actually about, surfacing as a
+  confusing "expected 1 booking slot, got 0" failure in a next-door race
+  test. Fixed by making the new test fill any seats it didn't use itself
+  before returning, matching the existing convention. General check for
+  this style of shared-server spec suite: any new test that touches a
+  session found via a shared "find one with spare capacity" helper must
+  leave that session either fully consumed or account for its own
+  contribution in a `booked`-aware way — never assume a later test's naïve
+  `capacity - 1` filler math is someone else's problem to keep working.
+- A tenth `comp4020-crit7-bada` run (week 8, `235ee89`) deliberately rotated
+  away from the name-key/case-fold family (three layers deep already —
+  ASCII, non-ASCII, NFC/NFD normalization) after the previous run's own
+  hand-off flagged three-in-a-row on one bug family as a signal to look
+  elsewhere, not confirmation to keep drilling. Landed on a different,
+  previously-uncovered code path with the same underlying method (verify
+  what the app's own validation actually accepts, not what it's meant to):
+  `bookings.ts`'s emptiness check was `!personName` on a `.trim()`-ed
+  string, but JS `.trim()` only strips whitespace (Unicode category `Zs`),
+  not zero-width/format characters (`Cf`, e.g. U+200B zero-width space) —
+  confirmed with `"​".trim().length === 1`, not `0`. A real browser's
+  own HTML5 `required` attribute has the identical gap (it only checks
+  `value !== ""`), so a name made of nothing but invisible characters
+  passed both the client-side `required` guard and the server-side check,
+  silently taking a real seat while displaying as nothing at all in the
+  attendee list — worse than the seat just staying open, since this app's
+  whole selling point is an honest, visible attendee list. No test had ever
+  exercised `error=invalid` at all before this run, not even the plain-blank
+  case. Fixed by checking `/[^\s\p{Cf}]/u.test(personName)` alongside the
+  existing checks, and added a third test confirming a name that merely
+  *contains* one ZWSP alongside real characters still books successfully,
+  so the fix doesn't overreach into rejecting legitimate names. Also
+  checked and found clean, worth not re-checking: SQLite foreign keys
+  (`bookings.session_id`, `sessions.course_id`) are enforced by default in
+  this environment's `better-sqlite3` (13.0.3) with no explicit `PRAGMA
+  foreign_keys = ON` anywhere in `db.ts` — verified with a scratch DB and a
+  raw `INSERT` against a bogus `session_id`, which failed with `FOREIGN KEY
+  constraint failed` regardless of whether the pragma was set explicitly.
+  General technique for any deliverable whose validation logic mixes a
+  client-side HTML guard (`required`, `pattern`) with a server-side mirror
+  of the same rule: check whether both sides agree on what "empty"/"valid"
+  means using the *language's* actual definition (JS `.trim()`'s whitespace
+  set, HTML's `value !== ""`), not the intuitive one — the same class of
+  gap as the ASCII-only `lower()` bug, just one level earlier in the
+  pipeline (presence, not case-folding).
+- An eleventh `comp4020-crit7-bada` run (week 8, `35cfd68`) rotated away from
+  the name-key/case-fold/emptiness family (four layers deep across the prior
+  three runs) onto the read path instead, per the previous hand-off's
+  explicit suggestion. Found: `db.ts`'s two attendee-listing queries
+  (`listSessions`'s per-session `bookedBy`, and the identical shape inside
+  `bookSession`'s transaction building the SSE broadcast payload) had no
+  `ORDER BY` at all, so their row order was whatever SQLite's query planner
+  happened to produce — confirmed via `EXPLAIN QUERY PLAN` on a hand-built
+  scratch DB (schema + `name_key()` function + the real unique index
+  reproduced from `schema.ts`) that a plain `WHERE session_id = ?` query with
+  no explicit order gets satisfied by walking the `(session_id,
+  person_name_key)` unique index, returning rows sorted by folded name, not
+  by insertion/signup order. Not a crash and no capacity/duplicate violation
+  (the actual contract test's own focus), but a real drift from "who's
+  booked, in the order they booked" — and nothing guaranteed the two
+  identically-shaped queries would keep agreeing with each other either, so
+  a future index/schema change could make the page and the SSE broadcast
+  silently disagree on attendee order for the same session. Fixed with an
+  explicit `.orderBy(bookings.id)` on both queries (cheap, no migration).
+  Verified two ways before committing: a new regression test booking two
+  names in reverse-alphabetical signup order ("Zeta Booker" then "Beta
+  Booker") and asserting the rendered page lists Zeta first; and, separately,
+  the identical two-name booking sequence against a real `pnpm dev` server
+  on a dedicated port with a fresh throwaway DB, reading the rendered HTML
+  back with `curl` to confirm the fix holds in a real running server, not
+  just the JSDOM-based spec harness. Deliberately did *not* repeat that same
+  booking sequence against live production to verify there too — unlike the
+  ZWSP/empty-name fix two runs prior (which is safe to verify live since a
+  rejected booking never takes a real seat), this fix can only be observed
+  by actually booking real seats, and this app has no delete/cancel, so
+  doing that on the shared production volume would leave permanent junk
+  data for a cosmetic-only bug. Confirmed instead that all five seeded
+  sessions still read `0 booked` on the live URL after deploying, i.e. the
+  deploy shipped clean with no side effect. General technique: for any bug
+  whose only live-visible symptom is "state changes permanently and there's
+  no way to undo it" (as opposed to a rejected request, which leaves no
+  trace), the standing "verify against real production" discipline in this
+  file has a real exception — verify against a fresh local server instead,
+  and settle for confirming production's *existing* state is unperturbed by
+  the deploy itself.
+- The finishing run on `comp4020-crit7-bada` (week 8, `24765ba`) caught a
+  case the standing "reflection heading drift"/"process-account drift"
+  lessons in this file predict but hadn't yet turned up on this deliverable:
+  a project's own README asserted "a unique constraint on `(session_id,
+  person_name)`," a claim that was true when first written but had been
+  silently overtaken by three later deepen-run schema fixes
+  (`dc0d99a`/`36417f9`/`9cf3082`) that moved the real constraint onto a
+  generated, case-folded, normalized `person_name_key` column --- nothing
+  broke and no check caught it, since the README's prose isn't executable.
+  Found only by rereading the README's own bulleted claims against the
+  current `schema.ts` at the finishing pass, the same discipline already
+  used for doctrine-vs-reflection-heading drift. General check: at the
+  finishing run on any deliverable whose README/spec makes a specific claim
+  about a schema/constraint/algorithm, diff that claim against the current
+  implementation one more time before shipping --- a claim written accurately
+  early in a multi-week deepen doesn't stay accurate for free just because
+  nothing failed.
 
-## Working patterns that held up
+- `docker` in this sandbox needs `sudo`: `ben` is in the `sudo` group but not
+  `docker`, and the socket is `root:docker` group-owned, so a plain
+  `docker build`/`docker run` fails with "permission denied ... docker.sock"
+  even though `docker` itself is on PATH. `sudo docker build`/`sudo docker
+  run` work fine. Worth doing a real local `docker build` + `docker run` +
+  `docker restart` (or a kill+restart) before ever deploying to Fly when a
+  deliverable's core claim is "persists across a restart/redeploy" --- it's
+  the same guarantee the Fly volume is meant to provide, checked directly
+  against the actual Dockerfile rather than assumed from reading `fly.toml`.
+  Confirmed useful in `comp4020-final-bada` week 9 verifying a SQLite-file-
+  on-volume design before the first deploy.
+- This course's GitHub org for crit/deliverable repos is
+  `comp4020-agentic-coding-studio`, confirmed via `git remote -v`, NOT
+  `comp4020` --- the latter is what a plausible-looking guess (or the
+  template's own placeholder `YOUR-ORG/YOUR-REPO` in `PROCESS.md`) would
+  produce. Always run `git remote -v` before writing a `PROCESS.md` commit
+  citation link, never infer the org from the repo name pattern or a prior
+  deliverable's URL --- confirmed in `comp4020-final-bada` week 9, and
+  consistent with the standing "check:evidence never validates the URL,
+  only the SHA" lesson elsewhere in this file.
 
-- **A genuine DOM form submission (`el.requestSubmit()` on the real
-  `<form>`, or a real `.click()` on its submit/cancel button) is a
-  distinct verification claim from a vitest spec's `fetch()` POST to the
-  same route, and from a tab-to-tab SSE check — none of those exercise the
-  browser's own form-serialisation and same-origin `Origin`-header
-  behaviour the way a real submission does.** Confirmed on
-  `comp4020-crit7-baishi` (2026-09-24): after working around the
-  `type="time"` fill limitation above, drove a real reschedule via
-  `requestSubmit()` on the actual roster form and a real cancel via a
-  native button `.click()`, both against a fresh local `pnpm preview` —
-  console clean, roster updated correctly in both cases. Cheap to run once
-  the app has a form-based write path and worth doing at least once per
-  such deliverable, since `fetch()`-based spec coverage (however thorough)
-  never actually exercises the `<form>` element itself.
+- `pkill -f "<pattern>"` inside a Bash tool call whose own command line
+  contains that same pattern kills the tool's shell itself (exit 144, and
+  every later statement in the call silently doesn't run). Kill by the
+  listening PID from `ss -ltnp | grep :<port>` instead. Confirmed in
+  `comp4020-final-bada` week 10.
 
-- `agent-browser tab new <url>` opens a genuinely separate tab in the same
-  browser session, and `agent-browser tab <id>`/`tab list` switches between
-  them — the real way to verify a live cross-tab feature (an SSE/WebSocket
-  "another tab changed something, reload" listener), distinct from asserting
-  the stream contract at the HTTP layer in vitest. Technique: set a throwaway
-  marker (`window.__marker = 'x'`) on the listening tab, trigger the change
-  from the other tab, then check the marker is *gone* on the listening tab —
-  that proves a real navigation happened, not just that new text appeared
-  (which a lazy check could also produce from a stale cached render). Used on
-  `comp4020-crit7-baishi` to confirm a reschedule submitted in tab 1 actually
-  drove tab 2's own `EventSource` listener to reload, console clean in both.
-- **An unconditional `location.reload()` triggered by a live-sync listener
-  (SSE/WebSocket "something changed elsewhere, refresh") can silently
-  discard whatever the current tab's own user was mid-way through typing —
-  a real data-loss bug distinct from the reconnect/backlog gap logged
-  below, and one no vitest stream-contract test can ever catch since it's
-  about *client-side unsaved state*, not the server's broadcast.** Found on
-  `comp4020-crit7-baishi`'s sixth run by driving the exact "more than one
-  tutor has this open" scenario the app's own README names as the reason
-  live sync exists: typing a draft into a form in tab 1, then submitting an
-  unrelated real change from tab 2, and watching tab 1's SSE listener
-  reload and wipe the draft with no warning. Fix pattern: a small
-  `markDirty`/`isDirty` tracker wired to the form's own `input` event,
-  checked immediately before every reload call site; when dirty, show a
-  status notice instead of reloading, and let the user's own submit or a
-  manual reload pick up the change later. Verification technique: use
-  *distinguishing* JS-state markers across three tabs (dirty-tab-keeps-draft,
-  clean-tab-still-reloads-normally, i.e. no regression) rather than eyeballing
-  page content, since a stale cached render and a genuine non-reload can look
-  identical from a screenshot alone — the same "prove navigation did or
-  didn't happen" discipline as the `tab new` marker technique above, applied
-  to the negative case (proving a reload was correctly *skipped*) instead of
-  the positive one. **Trap hit getting there:** an early attempt to
-  reproduce the bug appeared to show the draft surviving, but the "attacker"
-  tab's own form submission was silently failing validation the whole
-  time — its `type="time"` fields (`startTime`/`endTime`) were empty because
-  of the `fill`/`type` limitation already logged below, so no real change was
-  ever broadcast and no reload should have happened either way. That's a
-  false negative on the test, not evidence the bug doesn't exist — verify
-  the "attacker" tab's own submission actually succeeded (check the redirect
-  landed, or `new FormData(form)` before submitting) before trusting a
-  reproduction attempt that shows nothing happened. General lesson for any
-  future crit with a live-reload listener: check whether the reload call
-  site has any guard against the current tab's own unsaved input at all —
-  if the listener's only job is "something changed, refresh," it almost
-  certainly doesn't, and this exact two-tab technique is the way to find out.
-  **This trap recurred twice on the same repo's seventh run**, re-verifying
-  the fix below rather than reproducing the original bug — always check
-  `form.checkValidity()` on the "attacker" tab immediately before trusting
-  either a "nothing happened" or a "something happened" result from this
-  two-tab technique, not just once when the bug is first found; a tab's
-  `type="time"` fields go blank again after every redirect a prior
-  submission from that same tab triggered, so a second reuse of the same
-  tab silently needs re-filling every time, not just the first.
-- **A `markDirty`-only tracker is a one-way ratchet: once true, it never
-  reports clean again, even after the thing that made it dirty is undone.**
-  On `comp4020-crit7-baishi`, the fix just above (a dirty flag gating a
-  live-reload listener) initially had only `markDirty`/`isDirty`, set by the
-  form's `input` event — so a tutor who typed a draft into the reschedule
-  form and then cleared it back out (abandoning it, not submitting) left
-  that tab's live sync permanently broken for the rest of its life, over a
-  draft that no longer existed. Confirmed with the same two-tab
-  `window.__marker` technique: clear the draft back to empty, trigger a
-  genuine change from the other tab, watch the tab stay stuck on the stale
-  notice instead of reloading. Fix: add `markClean`, and instead of the
-  `input` listener calling `markDirty` unconditionally, have it re-compare
-  the form's current `FormData` serialization (`new
-  URLSearchParams(new FormData(form)).toString()`) against a snapshot taken
-  once at page load, calling `markClean`/`markDirty` depending on whether
-  they currently match — a live recomputed diff, not a sticky flag. General
-  lesson for any future crit with a "there's unsaved state, don't clobber
-  it" gate (a dirty flag, an "unsaved changes" banner, a beforeunload
-  guard): check whether undoing the thing that made it dirty is possible,
-  and whether the gate actually notices when it happens, not just whether
-  the gate fires in the first place.
-- **Making a one-way gate bidirectional (the `markClean` fix just above) only
-  fixes *future* attempts through it — it doesn't retroactively resolve an
-  attempt that already failed and left a visible trace behind.** On
-  `comp4020-crit7-baishi`, `markClean` correctly let a *later* reload attempt
-  succeed once the draft was undone, but a reload that had *already* arrived
-  while dirty (skipped, with the stale-notice banner shown instead) was never
-  retried — the tab sat on that notice indefinitely once the draft cleared,
-  waiting for some unrelated further change to arrive, or a manual refresh,
-  neither of which the fix's own two-tab test had checked for. Confirmed live
-  with the same `window.__marker` technique used elsewhere in this file: mark
-  dirty, trigger a real change from another tab (notice shown, marker
-  untouched — correct), then clear the draft and check the marker again — it
-  was still untouched, proving no reload had fired even though the tab was
-  now clean. Fixed by having the gate track *both* directions explicitly: a
-  `notePendingReload`/`claimPendingReload` pair, where the reload site records
-  that it deferred one and the clean-transition handler claims and fires it
-  immediately rather than waiting for a fresh trigger. General lesson for any
-  future "gate skips an action and shows a placeholder instead, gate reopens
-  later" pattern (a dirty-tracker-gated reload, a disabled-button-until-valid
-  form, a "retry when back online" banner): after fixing the gate to reopen
-  correctly, check specifically whether reopening it *resolves the deferred
-  action*, or merely *permits the next attempt* — these are different claims,
-  and a test that only re-tries the trigger (a second live change) instead of
-  checking what happens right when the gate reopens on its own can pass while
-  this exact gap still exists.
-- **An in-memory pub/sub bus behind an `EventSource` live-sync design (no
-  backlog/replay) has a real, checkable gap around a Fly.io
-  `min_machines_running = 0` auto-stop/wake cycle, distinct from whether the
-  browser reconnects at all.** Simulate the outage by killing and restarting
-  the local preview server mid-session (stand-in for the machine
-  stopping/starting) while a second `agent-browser` tab has the page open:
-  the browser's own `EventSource` reconnection is a spec guarantee and held
-  up cleanly on `comp4020-crit7-baishi` — but any event the server broadcast
-  *during* the outage window is gone by the time the client reconnects,
-  since a plain in-memory `EventEmitter` bus keeps nothing to replay. A tab
-  that missed a change this way goes stale with no visible sign, until some
-  unrelated future change arrives. The fix that generalises: treat the
-  `EventSource`'s own `open` event (which fires on every reconnect, not just
-  the first connect) as "something might have changed while I was gone" and
-  reload then too, gated so the very first connect on a fresh page load
-  doesn't reload itself (`connectedBefore` flag, flip to `true` after the
-  first call, reload on every call after). Worth checking on any future
-  Fly.io deliverable whose live-sync design is SSE/WebSocket over an
-  in-memory bus with no backlog — the auto-stop config makes a real outage
-  window routine, not a rare edge case.
-- `drizzle-kit generate` demands an interactive TTY prompt ("is this a
-  rename?") whenever a schema edit could be read as renaming an existing
-  table/column, and fails outright in a non-interactive sandbox
-  (`Error: Interactive prompts require a TTY terminal`). When the schema
-  change is a genuine redesign (new tables replacing an old one, not a
-  rename) and nothing has been deployed to Fly yet for the repo — so there's
-  no production volume state whose migration history needs preserving —
-  the clean fix is deleting the whole `drizzle/` directory (old migration +
-  `meta/`) and regenerating fresh, rather than trying to answer the prompt
-  blind. Confirmed safe on `comp4020-crit7-baishi`'s first run, replacing a
-  single `messages` table with `crit_groups`/`weeks`/`exceptions`. Don't
-  reach for this once a repo has a real deployed volume — at that point the
-  migration history is load-bearing and this would be a genuine data-loss
-  risk, not a clean regeneration.
+- `comp4020-final-bada`'s `pnpm check` runs its specs against a *running*
+  app (`spec/global-setup.ts`), so with nothing listening it fails with "No
+  test files found" plus "nothing is answering at :8080", which looks like a
+  broken config but isn't. Start one first on a throwaway dir:
+  `DATA_DIR=$(mktemp -d) PORT=8091 node src/server.ts &`, then
+  `APP_URL=http://localhost:8091 pnpm check`, then kill the PID from
+  `ss -ltnp`.
 
-- A course-source brief's "what you submit" section can carry a specific
-  content instruction for a required file, not just a format one (word
-  count, citation style) — treat every sentence in it as a checkable claim,
-  the same clause-by-clause technique already logged for crit-4/crit-5's
-  interaction briefs, applied here to a *process document's* required
-  content instead of a game's behaviour. On `comp4020-ass2-baishi`, the
-  assignment-2 brief said the `PROCESS.md` narrative "should explain...
-  which [decisions] were deliberately omitted" from harness/spec
-  enforcement — a real, specific ask distinct from the word-count/citation
-  checks `check:evidence` already validates mechanically. Four prior runs
-  had kept `PROCESS.md` accurate and well-cited without ever satisfying
-  that one sentence, because nothing in `pnpm check`/`check:evidence` can
-  catch a *missing* content category the way it catches a missing citation.
-  Re-read the brief's own "what you submit" prose against the current file
-  before treating a well-cited PROCESS.md as complete.
-- The doctrine's "no JS" constraint recurs whenever a crit spec bans
-  scripting but the aesthetic being chased (marquees, blinking, live
-  counters) traditionally used it. CSS alone reproduces these
-  convincingly — `@keyframes` + `translateX` for scrolling banners,
-  `repeating-linear-gradient` for hazard stripes, styled `<span>` digits
-  for a fake counter — and it's worth reaching for that before any
-  deprecated tag (`<marquee>`, `<blink>`) even when the brief's own
-  examples suggest them: deprecated markup renders inconsistently and
-  isn't a foundation worth building six pages on.
-- A retro site "logo" wants visually to be a big heading at the top of
-  every page, but the spec's own invariant checks (and most sane a11y
-  practice) expect exactly one `<h1>` per page — the page's actual
-  content heading. Demote the logo to a styled `<p>` (e.g.
-  `class="wordmark"`) rather than dropping the invariant or the content
-  heading. This will recur any week a "signature banner" look is wanted.
-- The instruction to never guess/generate URLs not directly in service of
-  programming help extends naturally to in-repo content decisions, not
-  just chat replies: an old-web "links/webring" page that would normally
-  hyperlink out to museums/archives instead named institutions as plain
-  text and only hyperlinked back into the site's own pages. Treat this as
-  the default whenever a crit's content genuinely wants outbound links —
-  plain-text citation over a guessed/unverifiable href.
-- Commit granularity: one commit per page/concern (CSS+home together,
-  then one commit per subsequent page) reads far better in the process
-  evidence than one dump, even when all pages are authored in one
-  sitting. Keep doing this.
-- Run `pnpm check` before committing, not after — every stylelint/vitest
-  fix this run happened pre-commit, so the commit history shows a
-  consistently green state rather than a fix-up trail. `PROCESS.md`
-  should say so honestly (no fabricated red→green commit pairs) rather
-  than manufacture a broken-then-fixed diff that didn't happen.
-- The template's `spec/README.md` is explicit that turning the week's own
-  published spec into tests is the agent's work, not the template's — the
-  shipped `invariants.test.ts` only covers site-agnostic basics. Check
-  every run whether a crit-specific `spec/<crit>.test.ts` exists yet for
-  the checkable lines a test actually can assert (e.g. "no JavaScript",
-  "pages reachable from home"); if it's missing, writing it is a genuine,
-  well-scoped deepening task, not scope creep.
-- Before trusting a stale `now.md` claim like "not yet pushed," run
-  `git fetch` and compare against `origin/main` directly — a prior run's
-  note can lag what actually happened (this repo's C1 work turned out
-  already pushed despite the note saying otherwise).
-- To run a real accessibility check without adding a permanent
-  dependency: serve `dist/` locally, open a page with `agent-browser`,
-  and `agent-browser eval` a snippet that appends a `<script src="https://
-  cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js">` and awaits
-  its `onload`, then a second `eval` calling `axe.run().then(r =>
-  JSON.stringify(r.violations...))`. Network access from the browser
-  works fine in this sandboxed environment. This is a one-off audit, not
-  the same thing as wiring axe-core as a permanent CI sensor (the
-  template's `CLAUDE.md` explicitly leaves that as separate, later work)
-  — reach for the CDN-injection version first when the question is just
-  "does this page currently pass," and only add a real devDependency +
-  test if the week's spec asks for a standing sensor.
-- `PROCESS.md`'s "moments that mattered" needs to be re-read against
-  `git log` every run, not just extended when new work happens — a prior
-  run added a genuinely good commit (`spec/crit-1.test.ts`) but never
-  updated `PROCESS.md` to cite it, so the reading-guide silently fell
-  behind the history it's supposed to map. Check for this drift
-  specifically: does every notable commit since the last `PROCESS.md`
-  edit have a citation, not just the newest one.
-- The crit-1 repo has an in-repo `agent/` directory (`agent/doctrine.md`,
-  `agent/MEMORY.md`, `agent/now.md`) that mirrors this external memory
-  system, committed under messages like "memory: tick snapshot
-  <timestamp>" with author `Baishi <baishi@comp4020.anu.edu.au>` — the
-  same identity this session commits as. Don't mistake these for a prior
-  run's own edits, and never touch `agent/` directly: the doctrine is
-  explicit that `agent/` is harness-owned, and the most consistent read
-  is that a wrapper around the `claude --print` invocation (not the model)
-  writes these snapshots after a run finishes. Only ever write to the
-  real `memory/now.md` and `memory/MEMORY.md` outside the repo.
-- The CDN-injected axe-core sweep (see the entry above) is worth re-running
-  whenever a repo's markup changes, not filed away as "already ran once for
-  this crit": on crit-2, a run that found the repo otherwise fully finished
-  still ran it fresh and it caught a real `region` violation the prior run's
-  own build never had checked — a `.hero` block (the page's actual lede
-  content: address, hours, phone) sitting between `</header>` and `<main>`
-  on the home page only, unlike every other page where the equivalent
-  content already opened inside `<main>`. A single-page structural
-  inconsistency like this is exactly the kind of thing that's invisible to
-  `pnpm check` (no invariant asserts landmark coverage) and easy to miss by
-  eye since the page still renders and reads fine — the tool is what caught
-  it, not a prose re-read.
-- When a deepening pass turns up nothing to change (checks all green, a
-  close CSS re-scrutiny and a full line-by-line prose reread of every
-  page find no defects), that is a legitimate outcome, not a failure to
-  find work — record what was checked and move on rather than inventing
-  cosmetic changes (e.g. a favicon, or editing the template's generic
-  `README.md`) just to have a diff. Manufactured busywork reads worse in
-  the process evidence than an honest "verified, nothing needed" note.
-- `pnpm outdated` / `pnpm audit` is a genuinely different deepening angle
-  from the prose/CSS/a11y passes already tried, but for a static-HTML
-  crit that's already finished, don't chase it reflexively: `pnpm audit`
-  coming back clean is worth a quick check every so often, but every
-  entry `pnpm outdated` lists for this template (oxlint, @types/jsdom,
-  @types/node, jsdom, typescript) is a *major* version bump, not a patch
-  — bumping build tooling this far from cutoff carries real risk
-  (frozen-lockfile CI install, a major TS version's stricter checks) for
-  zero benefit to the deployed static site. Evaluating it and choosing
-  not to bump is the legitimate outcome here, same as the CSS/prose
-  passes finding nothing — don't manufacture a dependency-bump commit
-  just to have touched something.
-  **Update (assignment-1, 2026-08-12):** don't stop at "every `pnpm
-  outdated` entry is major, so there's nothing safe to do" — that was true
-  of the *pinned* deps but not of what's reachable through them. `pnpm
-  audit` on this repo found 9 real vulnerabilities (4 high, 5 moderate) in
-  transitive dev-tooling deps (`undici` via `jsdom`; `postcss`/`nanoid`/
-  `js-yaml`/`fast-uri` via `stylelint`'s toolchain), and a plain `pnpm
-  update` — which only moves versions *within* the ranges `package.json`
-  already declares, touching no pin — bumped just `oxlint` and `vite` and
-  cleared every one of them, `pnpm check` still green after. The two
-  checks answer different questions: `pnpm outdated` tells you what's safe
-  to *pin higher* (often nothing, near cutoff); `pnpm audit` plus a plain
-  `pnpm update` tells you what's already fixable *without* touching a pin
-  at all. Always try the in-range update first when audit finds something
-  — it's categorically lower-risk than a major bump and may well clear the
-  finding outright, as it did here. Written up as a `CLAUDE.md`
-  entry + a genuine third `PROCESS.md` moment on assignment-1, which
-  otherwise had only two — worth remembering that the assignment's own
-  spec (unlike a crit's) explicitly wants three or four moments, not
-  fewer, so a legitimate new finding like this is worth writing up as a
-  moment even on a build that already reads as "finished."
-- A performance/console spot-check is another distinct, legitimate
-  deepening angle (separate from the a11y pass already done): serve
-  `dist/` with `CI=true pnpm preview --port <p>`, then per page
-  `agent-browser open` + `agent-browser console` (empty output = no
-  errors) + `agent-browser eval
-  "JSON.stringify(performance.getEntriesByType('navigation'/'resource')...)"`
-  for load timing and transfer sizes. For a plain-HTML/CSS crit this is
-  fast (~50ms DOMContentLoaded, ~2KB per page) and found nothing to fix.
-  One artefact worth knowing about but *not* worth chasing: the browser's
-  automatic `/favicon.ico` probe 404s because no favicon exists and none
-  is linked in any `<head>` — this doesn't fail any check and isn't a
-  broken link the site declares, so per the "don't manufacture busywork"
-  lesson above, leave it rather than adding a favicon just to clear it.
-- `agent-browser` has no print-media emulation (`set media` only takes
-  dark/light/reduced-motion) — for a reader/print-view style proof-read,
-  use `agent-browser read <url> --outline` (heading hierarchy only, good
-  for spotting a missing/duplicate `<h1>` or skipped levels) and plain
-  `agent-browser read <url>` (stripped-down reader-mode text extraction)
-  instead. One gotcha: that extraction renders named HTML entities
-  without their trailing semicolon in its markdown conversion
-  (`&rsquos`, `&mdash`) even when the source has them correctly
-  (`&rsquo;`, `&mdash;`) — always grep the actual `.html` source before
-  treating a missing-semicolon entity as a real bug, it's very likely
-  just the read tool's cosmetic rendering.
-- `agent-browser screenshot`'s second positional argument is the
-  destination *path*, not a flag slot — the full-page flag is
-  `--full`/`-f`, not `--full-page`. Passing `--full-page` doesn't error;
-  it's silently parsed as the path, so the screenshot writes to a
-  literally-named `--full-page` file in the current directory instead of
-  where you intended. `git status` caught this as a stray untracked file
-  before it could be committed. Check the flag name before scripting
-  screenshot loops.
-- Before treating a both-viewport visual screenshot pass as a fresh
-  deepening angle, check whatever scratch directory earlier runs used
-  (e.g. `/tmp/shots/`, if that path recurs) for timestamped files first —
-  this repo's crit-1 already had matching desktop/mobile screenshots of
-  all six pages from two prior runs (2026-07-29, 2026-07-30) sitting in
-  `/tmp/shots/`, meaning a run that tries this "new" angle without
-  checking is just repeating work, not deepening. `now.md` and
-  `PROCESS.md` don't record every check that was run (only what changed
-  the site), so `/tmp` scratch artefacts are sometimes the only trace of
-  a prior angle already tried.
-- `pnpm dlx html-validate dist/*.html` is a genuinely distinct one-off
-  deepening angle from the a11y/performance/CSS/prose passes above, but
-  its default preset's `doctype-style` and `void-style` rules assume an
-  older HTML-authoring convention (uppercase `<!DOCTYPE html>`, no
-  self-closing void elements) that is the *opposite* of this template's
-  already-consistent modern style (lowercase doctype, self-closing
-  `<meta/>`/`<br/>`/`<hr/>`, matching Vite's own output). Don't treat
-  those two rule categories as defects to fix — "adopting" them would
-  make the markup less internally consistent, not more correct. Do
-  check whether any *other* rule category fired (duplicate IDs, missing
-  alts, invalid nesting) — that would be a real finding; on this repo
-  none did, which is itself useful confirmation of structural soundness.
-  It's still worth re-running per repo, not treated as "already checked
-  once": on crit-2 the same tool caught a real `tel-non-breaking` finding
-  (a phone number that could line-wrap mid-digit-group) that crit-1 never
-  had a phone number to trigger — fixed with `&nbsp;` between the digit
-  groups. On assignment-1, only the same two expected non-issue categories
-  fired again and nothing else — third repo running with this exact
-  clean-except-doctype/void-style pattern, and likewise a clean axe-core
-  sweep (0 violations) on assignment-1's single page. Both are cheap enough
-  to run fresh per repo rather than trust as "probably still clean."
+- Load-checking an SSE app needs no browser: a Node script opening N
+  `fetch('/events')` streams (each with its own `visitor=` cookie), parsing
+  `data:` lines off `r.body`, then timing POSTs against arrival. On
+  `comp4020-final-bada` (crit 9), 60 listeners got all 15 marks, worst
+  267 ms, ~92 MB RSS. One run of this is enough; it came back clean.
 
-- Real keyboard interaction testing is a distinct deepening angle from
-  axe-core's static audit: `CI=true pnpm preview`, `agent-browser open`,
-  then repeated `agent-browser press Tab` + `eval
-  "document.activeElement..."` to read tag/text/href/outline off each
-  focused element in turn. Checks two things static analysis can't: tab
-  order actually matches visual/logical order, and every focused element
-  gets a *visible* focus indicator (grep `styles.css` for `outline:
-  none` resets first — if there are none, the browser's default
-  `outline: auto` covers anything a custom `:focus-visible` rule
-  doesn't). On crit-1 this held cleanly at both viewports with no
-  console errors — reach for it once static a11y/HTML-validation tools
-  are exhausted and there's still deepen-phase budget left.
-- Two deepening angles distinct from the tab-order walk already logged above:
-  (1) **resize mid-interaction** — set the interaction to a non-trivial state,
-  then `agent-browser set viewport` straight to the other marking size
-  *without reloading*, and check state/layout survive (no console errors, a
-  screenshot at the new size still looks right). This is exactly what the
-  assignment-1 spec's artefact HD band names ("holds up under... a resize
-  mid-interaction"), and it's a real live check, not inferable from reading
-  CSS. (2) **actual keyboard actuation of the control**, not just tab order —
-  focus the element and send the real keys that operate it (`ArrowRight`,
-  `Home`, `End` for a range input) and confirm the on-screen state tracks
-  exactly as a pointer drag would. Tab-order/outline-visibility checks (see
-  above) only prove the control is *reachable*; this proves it's *usable*.
-  On assignment-1 both passed cleanly with a native `<input type="range">` —
-  worth noting as a finding in itself: using the native control instead of a
-  custom widget bought real keyboard support for free, with nothing to test
-  against regressing since the browser guarantees it.
-- `agent-browser screenshot <selector> <path>` (a positional selector before
-  the path, not a flag) crops the screenshot to one element — use this to put
-  two states of the same visual element side by side (e.g. a slider-driven
-  drawing at stroke count 10 vs 16) when a full-page screenshot buries the
-  comparison in unrelated page chrome. This is how assignment-1's over-
-  elaboration phase (visibly denser leg-ticks and a faint duplicate outline
-  from 11 strokes to 16) was actually compared against the sweet-spot phase,
-  rather than eyeballed from two separate full-page captures.
-- A `prefers-reduced-motion` CSS guard is worth observing live, not just
-  reading in source: `agent-browser eval
-  "getComputedStyle(document.querySelector(selector)).animationName"`
-  before and after `agent-browser set media reduced-motion` (then `set
-  media no-preference` to reset). Code review alone can't catch a typo'd
-  media query or a selector that doesn't actually match the animated
-  element — this closed that gap on crit-1's marquee (`scroll-left` →
-  `none` under the emulated preference, confirmed live rather than
-  assumed from the CSS).
+- Two isolated browser profiles (a crit's "separate Chrome profiles"):
+  `agent-browser --session a open ...` / `--session b ...` gives each its
+  own cookie jar. Confirmed in `comp4020-final-bada` crit 10.
+- `flyctl logs --no-tail` only returns Fly's recent buffer (a few hours,
+  roughly since the machine last started), so stdout alone doesn't meet a
+  "logging outlives the crit" bar. Append each line to a file on the volume
+  too and read it with `flyctl ssh console -a <app> -C "tail -n 100
+  /data/actions.log"`. Done in `comp4020-final-bada` crit 10.
+- Read the production log before the crit, not just a local one: on
+  `comp4020-final-bada` crit 10, `/data/actions.log` was entirely an hourly
+  external probe arriving as a fresh visitor. Fix was a coarse `agent=`
+  User-Agent label on `arrive` lines.
+- `flyctl status` prints the machine version as a bare number in a
+  `VERSION` column, not `vNN`. A deploy-wait loop grepping `v[0-9]+`
+  never matches. Use the `LAST UPDATED` timestamp instead.
 
-- `pnpm dlx linkinator ./dist --silent` against a fresh `pnpm build` is the
-  local equivalent of the CI links sensor (named in this repo's `CLAUDE.md`)
-  and is a genuinely distinct check from `spec/crit-1.test.ts`'s reachability
-  assertions — it's an actual crawl of the built HTML/asset graph rather than
-  a DOM-string assertion. On crit-1 it scanned all 7 built files/assets with
-  zero broken links. One quirk: `--silent` combined with `&&`-chaining after
-  a separately-redirected `pnpm build` produced a bare exit-1 with no visible
-  output in this sandbox — dropping `--silent` (or running build and
-  linkinator as separate commands) showed the real, clean crawl output. Don't
-  read a silent-flag exit code as a real failure without re-running verbose.
+## Repo-independent lessons
 
-- To find an organisation's real subpage URLs without guessing (a guessed
-  `/contact` on crit-2's `megalo.org` 404'd, the real path was `/contact-us`),
-  open the live site with `agent-browser` and `eval` a snippet enumerating
-  every `<a>`'s `href` + text from the actual DOM
-  (`Array.from(document.querySelectorAll('a')).map(a => a.href + ' | ' +
-  a.textContent.trim())`), then read the real path off the result. This is
-  mechanical discovery from the source, not a second guess.
-- A verified real street address fed into OpenStreetMap's own
-  `/search?query=<address>` endpoint (e.g.
-  `https://www.openstreetmap.org/search?query=21+Wentworth+Avenue%2C+Kingston+ACT+2604`)
-  is a legitimate wayfinding link, distinct from the "never guess a URL"
-  constraint — it's built from data already verified against the real
-  organisation's own site, through OSM's real, standard search route, not a
-  fabricated destination.
-- `stylelint`'s `no-descending-specificity` fires when a later-declared
-  selector has lower specificity than an earlier one it doesn't share an
-  ancestor with (e.g. `.tier ul` declared before `nav[aria-label="Primary"]
-  ul`, or `.footer-social a` before `nav[aria-label="Primary"] a`). The fix
-  that scales as a stylesheet grows is giving the offending rule its own
-  unqualified class (`.tier-benefits` instead of `.tier ul`;
-  `.footer-social { display: flex; gap: 1rem }` instead of a `> a { margin }`
-  child selector) rather than reordering the file — reordering only survives
-  until the next unrelated addition changes the interleaving again.
-- The choice of whether to convert a crit to Astro (now the course default)
-  is worth re-making per crit, not a standing policy either way: on crit-2,
-  no tested `stack` conversion skill was present in that session's available
-  skills, and the brief was six fixed informational pages with no
-  interactivity — nothing Astro's content collections/componentisation would
-  earn back against the real conversion risk (base path, the CI link-check
-  patch) for a hand conversion. Re-evaluate this each time rather than
-  assuming last run's answer still holds.
-
-- When verifying a `transform`-based positional fix on an SVG element live
-  (e.g. an intentional `translate(dx, dy)` offset to stop two strokes
-  rendering on top of each other), don't check with `getBBox()` — by
-  spec it returns the element's bounding box in its own user space
-  *before* its own `transform` is applied, so two identically-shaped
-  elements will report identical bboxes even when one is genuinely
-  offset on screen. Use `getBoundingClientRect()` instead, which
-  reflects the full rendered position. Learned on assignment-1 chasing
-  what looked like a fix that "didn't apply" when it actually had.
-- An SVG illustration authored by hand (coordinates typed in rather than
-  traced/exported) can pass every code-level check and still read as the
-  wrong subject entirely — assignment-1's first-pass ink shrimp looked
-  like a caterpillar/twig, not a shrimp, with no bug in the code. The
-  only way this surfaced was screenshotting the actual rendered output at
-  several points along the interaction (`agent-browser screenshot` at a
-  few slider values) and looking at it critically, then redesigning the
-  path geometry around the subject's real structure (a shrimp's body
-  genuinely C-curls; the first attempt was a shallow horizontal wave).
-  Budget for this as a real design-iteration step whenever a crit/
-  assignment involves hand-authored illustration, not just a one-off
-  spot-check.
-  **Correction (2026-08-10):** this entry had described that redesign as
-  already done, but it was never actually committed — a later run's
-  `git log` on this repo showed no such commit, and `strokes.ts` still
-  had the original wave-shaped body when checked directly. Whatever run
-  wrote the paragraph above apparently diagnosed and even drafted the fix
-  in-session but the change didn't survive into git, so the *next* run
-  hit the identical bug fresh and had to redo the whole diagnosis
-  (fixed for real this time in
-  [`168c2b0`](https://github.com/comp4020-agentic-coding-studio/comp4020-ass1-baishi/commit/168c2b0)).
-  The general lesson: a memory entry narrating a code-level fix is a claim
-  about what happened in a past session, not a verified fact about the
-  current repo — before trusting it (same caution as the stale-`now.md`
-  entry above, but for `MEMORY.md` prose itself), check the actual file or
-  `git log` for the commit it claims exists.
-
-- A distinct deepening angle from the geometry/a11y/HTML-validation passes
-  above: check the interaction's *actual live behaviour* against what the
-  page's own prose claims about it, not just against the spec/tests. On
-  assignment-1, the "idea" section said "nobody told you which stroke count
-  was which as you dragged — that's the point," but the built page's visible
-  `#phase-label` live region printed the exact verdict at every slider
-  position — handing sighted visitors the judgement the essay claimed they
-  had to make themselves. `spec/assignment-1.test.ts` only asserted the
-  label sat inside an `aria-live` region, which stayed true whether or not
-  it was visible, so no automated check caught this. Fixed by making the
-  qualitative label screen-reader-only (`.sr-only`, clip-based not
-  `display:none`, so it stays in the accessibility tree): sighted visitors
-  now judge by eye alone, matching the copy; screen-reader users, who can't
-  see the drawing, still get the announced verdict as their equivalent of
-  looking. The general check — does what the interaction *does* match what
-  the page *says* it does — is worth running on any prototype that narrates
-  its own interaction, and it only surfaces by using the live build, not by
-  reading the markup.
-- Real keyboard interaction testing is worth re-running per repo, not just
-  once for the template's stack: crit-2 hadn't had this specific check
-  recorded before (only crit-1 had), so a run at 23h-to-cutoff did it fresh
-  rather than assuming the crit-1 finding generalised. Tab order on
-  `index.html` walked wordmark → six nav links → the hero's `tel:` link, in
-  visual/logical order, with `outline:auto` (no custom `outline: none`
-  reset in the stylesheet) on every stop. Confirms the same pattern holds
-  site-to-site but isn't free to skip.
-- Shipping (flipping a repo from private to public, enabling Pages, running
-  the deploy workflow) is genuinely **harness-owned**, not something this
-  agent does itself — confirmed directly, not just inferred from doctrine's
-  prose: `gh auth status` in this sandboxed environment reports no logged-in
-  host and no `GH_TOKEN`/`GITHUB_TOKEN` in `env`, so there is no credential
-  available to run `gh repo edit --visibility public` even if it were the
-  right call. This matches doctrine.md's own line ("you never receive its
-  GitHub credential") exactly. A course plugin *does* ship a `ship` skill
-  with this exact irreversible-flip protocol (cached under
-  `~/.claude/plugins/cache/comp4020/comp4020/<version>/skills/ship/`), but it
-  isn't in this session's available-skills list and, even if it were, the
-  missing `gh` auth would block step 4 regardless. Don't spend a future run
-  hunting for a way to invoke it or trying to `gh auth login` — the doctrine
-  is explicit that publish/deploy/freeze happens automatically, on the
-  harness's own clock, from the commit this agent pushes. This agent's job
-  stops at "push the clean tree."
-
-- `agent-browser network route` only supports `--abort` or a fixed
-  `--body` — there is no request-delay/throttle primitive, so it cannot
-  simulate a genuinely *slow* connection, only a broken one (abort). For
-  the artefact criterion's "holds up under... a slow connection" HD line,
-  the closest available proxy is aborting the JS/CSS request and checking
-  the page still renders without crashing — useful, but log it explicitly
-  as a proxy for the real thing, not the real thing, since a load that
-  never arrives (abort) and one that arrives late (slow) can degrade
-  differently (e.g. a slider whose native `value` still moves via keyboard/
-  drag even with its `input` handler never wired up, silently, with no
-  error and no visible sign to the visitor).
-- Real pointer-drag testing (`agent-browser mouse move/down/move/up`, not
-  synthetic `input` dispatch and distinct from the keyboard-actuation check
-  already logged above) is worth doing once per interaction that's driven
-  by mouse/touch: it caught, on assignment-1's stroke slider, that the
-  redraw happens live mid-drag (a `#shrimp-canvas`-only screenshot taken
-  with the mouse still down showed the SVG already at the dragged-to
-  stroke count) rather than only on release — confirming the `input`
-  event wiring, not just the final value, behaves as the copy promises.
-- After a dependency bump that touches build tooling (e.g. the `oxlint`/
-  `vite` update that cleared the `pnpm audit` findings), re-run the visual
-  sensor even though `pnpm check` is green — a version bump to the bundler
-  itself is exactly the kind of change a green `tsc`/`vitest`/lint run
-  can't see the effect of on rendered output. On assignment-1, screenshotting
-  `#shrimp-canvas` at strokes 0/3/5/8/10/13/16 post-bump showed the geometry
-  unchanged (still the C-curl body, sweet-spot legs, over-elaborated
-  duplicate outline at max) and the console stayed clean. A legitimate
-  "verified, nothing to fix" outcome, not a wasted check — it's the only way
-  to know a tooling bump didn't quietly change output.
-
-- Judging "response to the brief" (a point-of-view/scope call, not a
-  code-level check) has its own distinct technique from re-reading the copy
-  in isolation: fetch one of the brief's own named exemplars (permitted —
-  it's a URL the brief gave, not a guessed one) and compare structure/tone
-  directly rather than judging against a remembered impression of the genre.
-  On assignment-1, fetching Ciechanowski's Mechanical Watch intro and
-  comparing its hook-then-explain shape against this page's own
-  drag-the-slider-first → idea section → generalisation structure confirmed
-  the response holds up against the HD band language ("pointed, surprising,
-  one idea carried all the way") rather than just asserting it does. Worth
-  reaching for whenever the deepening pass turns to content/scope judgement
-  rather than technical checks — a live comparison beats an unaided reread.
-  **This is per-assignment, not per-deliverable-once: each brief names its
-  own exemplars, and comparing against a different assignment's exemplar
-  doesn't substitute.** On `comp4020-ass2-baishi`, the brief itself names
-  three different exemplars (Calling Bullshit, Fab's "How to Make (Almost)
-  Anything," CS007) for a twelve-week course-site assignment, distinct from
-  assignment-1's single-page exemplar — comparing against those three (not
-  yet done in five prior runs on this repo, which had only ever done
-  technical sensors and unaided prose rereads) surfaced a genuine, citable
-  strength: the course does Calling Bullshit's single-governing-metaphor
-  move (copy-vs-forgery's "the note," defined once in week 1, applied
-  everywhere after), and goes further with something neither exemplar does
-  as explicitly — live cross-week callbacks inside the lecture prose itself
-  (week 9's synthetic-media lecture: "that's the same asymmetry from week
-  2's connoisseurship lecture"; week 10: detection "works the way week 3's
-  materials science worked," the arms race "from week 6's banknotes runs
-  here too"). A marker reading two non-adjacent weeks (the assessment page's
-  own stated reading protocol) would actually hit this. No code change —
-  recorded as citable process evidence, not a defect fix.
-
-- `scripts/check-evidence.ts` (the template's `pnpm check:evidence`) shares a
-  single `failed` flag across unrelated checks, and gates each check's own
-  success message behind `if (!failed)` at the very end — so a run where only
-  the reflection is missing (expected, this far from cutoff) prints just that
-  one failure line and looks like nothing else ran. It did: CLAUDE.md
-  presence and every PROCESS.md commit-citation resolve silently (they only
-  print on failure), so a single visible failure line doesn't mean the rest
-  is unverified. Read the script directly rather than inferring from its
-  console output alone if you need to know whether citations/CLAUDE.md are
-  actually clean mid-week.
-
-- A 200%-browser-zoom reflow check (WCAG 1.4.10) is a genuinely distinct
-  technical angle from every emulation `agent-browser set media` offers
-  (dark/light/reduced-motion only — no zoom or text-scale primitive exists
-  natively): `agent-browser eval "document.documentElement.style.zoom = '2';
-  document.documentElement.offsetHeight; ''"` after `open` applies a real
-  Chromium zoom (confirmed via `getBoundingClientRect()` on a heading
-  doubling in size, and `getComputedStyle(...).zoom` reporting `"2"`), then
-  check `document.documentElement.scrollWidth` vs `clientWidth` for
-  unwanted horizontal scroll and take a **non-`--full`** screenshot to see
-  the zoomed state. Reset with `style.zoom = '1'` before closing. On
-  assignment-1 this passed cleanly at both marking viewports — no
-  horizontal scroll, text and nav reflow (the nav row wraps to two lines
-  on mobile), the slider stays full-width and unclipped, no console
-  errors — a real, previously-untried check, not a repeat of the
-  resize-mid-interaction or reduced-motion entries above.
-  **Tooling quirk found along the way:** `agent-browser screenshot <path>
-  --full` (full-page mode) did *not* reflect the zoomed state at all in
-  this environment — two `--full` captures taken right before and right
-  after applying `style.zoom = '2'` came back pixel-identical (same
-  1920×3349 full-page height, same apparent font size), even though
-  `eval` in between confirmed the zoom had actually applied at the DOM
-  level. A plain viewport-only `agent-browser screenshot <path>` (no
-  `--full`) taken in the same zoomed state *did* show the zoom correctly.
-  Not investigated further (likely `--full`'s stitching path re-renders
-  outside the zoomed CDP surface), but worth knowing: don't trust `--full`
-  to reflect a CSS-`zoom` state, always verify with a non-`--full` shot or
-  an `eval` measurement alongside it.
-  **Extended (`comp4020-crit7-baishi`, 2026-09-23):** `document.documentElement
-  .scrollWidth` itself can be inflated by the zoom factor under `style.zoom`,
-  independent of any real overflow — on this repo's mobile viewport it read
-  642 (vs a 390 `clientWidth`) with `style.zoom = '2'` applied, which looked
-  like a real WCAG 1.4.10 failure, but no individual element's own
-  `scrollWidth` exceeded its `clientWidth`, a screenshot showed clean
-  wrapping, and `document.body.scrollWidth` read 321 — under the viewport
-  width, and exactly half of `documentElement.scrollWidth`. Measure
-  `body.scrollWidth` (or a per-element sweep) instead of
-  `documentElement.scrollWidth` when checking for real overflow under
-  `style.zoom`, and always cross-check with a screenshot before trusting
-  either number.
-
-- A full Lighthouse run (see the `CHROME_PATH` environment note above) is a
-  genuinely distinct sensor from the whole a11y/HTML-validation/keyboard/
-  CWV battery already logged above — it caught something none of them did.
-  On assignment-1, a run at 69h-to-cutoff, after that whole battery had
-  already been declared exhausted, scored `best-practices` at 0.96 because
-  every page load logs a real console error for the browser's implicit
-  `favicon.ico` 404 — the same 404 an earlier console spot-check had
-  already noticed and *explicitly decided to leave alone* (recorded above:
-  "doesn't fail any check... leave it rather than adding a favicon just to
-  clear it"). That earlier call was reasonable given what existed to check
-  it against at the time, but it was wrong once a real named sensor scored
-  it: the doctrine's own first finishing criterion is literally "no console
-  errors," so a real console error occurring on every page load is not
-  actually a non-issue just because no `pnpm check` step asserts on it. Added
-  a small ink-dot SVG favicon (colour-matched to the site's `--ink` custom
-  property) linked via `<link rel="icon">`, confirmed by re-running
-  Lighthouse (`best-practices` back to 1.0, `errors-in-console` 0 → 1) and by
-  checking the real network request in the browser, not just trusting the
-  score. Two things Lighthouse also flagged that are **not** worth chasing
-  for a tiny static single-page site, matching the existing busywork-guard
-  lesson: a missing `robots.txt`/`llms.txt` (the `seo`/`agentic-browsing`
-  categories penalise this, but nothing in the assignment spec or rubric
-  cares), and render-blocking-request/network-dependency-chain "insights"
-  over the page's one small CSS + one small JS file — restructuring loading
-  order for a 2KB stylesheet is optimising a score, not a real user
-  experience. The general lesson: a prior "leave it, nothing checks it" call
-  is only as good as the checks that existed when it was made — a genuinely
-  new sensor can overturn it, and that reversal is itself legitimate
-  deepening-pass material, not scope creep, when the thing it fixes is named
-  directly in the doctrine's own finishing criteria.
-
-- Circular elements sized with `clamp(min, Nvw, max)` inside a `flex` row
-  (`justify-content: center`, no wrap) will render correctly at the viewport
-  first checked and silently distort at the other one: when N pads' total
-  width exceeds the container, flexbox's default `flex-shrink: 1` compresses
-  each item's *width* to fit while an explicit `height` clamp is untouched,
-  turning circles into ellipses. Caught on crit-4 (2026-08-19) only by
-  screenshotting the actual 390×844 marking viewport, not by re-reading the
-  CSS — the 1920×1080 screenshot looked perfect and gave no reason to
-  suspect it. Fix is `flex-shrink: 0` on the item plus re-tuning the
-  size/gap `clamp()`s so the row's minimum total width actually fits the
-  narrowest marking viewport, rather than relying on flexbox to compress
-  it. General lesson, same shape as the earlier a11y/zoom findings: a layout
-  that only gets checked at one viewport is only verified at one viewport —
-  always screenshot both marking sizes for anything using `vw`-based sizing
-  in a `flex`/`grid` row, not just for animation/interaction checks.
-
-- A `clamp(min, Nvw, max)` used to size elements inside a flex row that
-  itself sits inside a width-capped ancestor (e.g. `main { max-width: 40rem
-  }`) will saturate at its rem-based max regardless of how much room the
-  actual row has, once the viewport is wide enough — because `vw` always
-  reads off the full viewport, not the element's real container. On
-  crit-4 (2026-08-19) this caused a genuinely confusing bug: fixing a
-  200%-zoom mobile overflow by switching `flex-wrap` from `nowrap` to
-  `wrap` was correct, but the row was *already* wrapping at plain desktop
-  zoom with no zoom applied at all, because 8 pads at their `vw`-clamp max
-  plus gaps (688px) never fit the 640px-capped row. This was missed on a
-  first pass because a screenshot glance at "looks like one row" isn't
-  verification — the fix is CSS container queries: `container-type:
-  inline-size` on the row's own element, then size children with `cqw`
-  instead of `vw` so they scale against the row's real rendered width, not
-  the viewport. Verify by measuring `getBoundingClientRect()` and counting
-  distinct row `top` positions across all four combinations (both marking
-  viewports × normal/200% zoom), not by eyeballing a single screenshot —
-  same shape as the earlier ellipse-pads and clamp()-in-flex-row lessons
-  above, but for row count instead of aspect ratio. This will recur on any
-  future crit with a `vw`-sized row inside a width-capped container.
-- To verify Web Audio is actually producing sound (this agent can't hear,
-  and DOM state like `.active` classes or a voice-count map only proves the
-  app's own bookkeeping ran, not that anything audible happened): patch
-  `AudioContext.prototype.createOscillator` and `AudioNode.prototype.connect`
-  via `agent-browser eval`, splice a real `AnalyserNode` in front of
-  `destination`, then read its time-domain/frequency data after a real
-  interaction. Two traps: (1) the naive patch that calls the *patched*
-  `connect` again for the analyser's own hookup to destination recurses —
-  guard with a flag and call the original `connect` (saved before
-  patching) directly for that one hookup; (2) a synthetic
-  `document.dispatchEvent(new KeyboardEvent(...))` correctly triggers the
-  app's own handlers (oscillator created, `.active` class set) but leaves
-  `AudioContext.state` stuck `"suspended"` — Chrome's autoplay gate does
-  not count a page-dispatched synthetic event as real user activation. Use
-  genuine CDP-driven input instead (`agent-browser press`, `agent-browser
-  mouse down`/`up`), which does resume the context to `"running"` and lets
-  the analyser read a real, non-zero signal. Confirmed on crit-4
-  (2026-08-19) including a two-note chord (two live oscillators, correctly
-  mixed higher peak, clean drop to zero on release). This is a one-off
-  verification technique to run per audio-producing crit, not a permanent
-  test-suite addition.
-- To read or drive a module-scoped object (an `AudioContext`, a state map)
-  that `agent-browser eval` can't see because the app never puts it on
-  `window`, patch the relevant global constructor *before* the page's own
-  script runs: `eval` a wrapper that replaces `window.AudioContext` with a
-  function that constructs the real one via the saved original, stashes the
-  instance on `window.__ctxRef`, then `open` (or reload) the page — the
-  patch has to land before the module's own top-level code executes, so
-  redo the same `eval` again right after the fresh navigation too; one
-  early `eval` before the first `open` doesn't survive a reload. Distinct
-  from the createOscillator/connect-analyser-splice entry above (that one
-  taps *audio signal*; this one taps a *specific instance reference* for
-  direct method calls like `.suspend()`/`.state`). Used on crit-4
-  (2026-08-20) to test whether Drift's `noteOn()` resume check generalises
-  beyond the initial autoplay-gate suspend: captured the real
-  `AudioContext`, resumed it with a genuine keypress, then called
-  `.suspend()` directly on the captured instance to stand in for *any*
-  browser-initiated suspend (not just the autoplay one), and confirmed a
-  second real keypress resumed it again cleanly. Confirmed the existing
-  `if (context.state === "suspended") void context.resume()` check in
-  `noteOn()` is unconditional on suspend cause and needs no separate
-  blur/focus-pair handler — a genuine "checked, nothing to fix" outcome,
-  distinct from the blur/visibilitychange *voice*-release bug below (that
-  one was a real gap; this one wasn't). Reach for this whenever a check
-  needs to drive a specific Web API instance the app keeps private, not
-  just observe whether *some* audio came out.
-- A synthetic `dispatchEvent` press-cycle (used elsewhere in this log because
-  `agent-browser press --hold` doesn't reliably sustain) is not equivalent to
-  a real drag for anything driven by pointer *movement* across multiple
-  elements — a glissando, a drag-to-paint control, anything keyed off
-  `pointermove`/`elementFromPoint`. Genuine `agent-browser mouse move <x> <y>`
-  / `mouse down` / `mouse move <x2> <y2>` (still held) / `mouse up` is needed
-  to prove the transition logic itself (does leaving element A's bounds while
-  still down correctly hand off to element B, with no double-fire or stuck
-  state), not just that each endpoint responds in isolation. Confirmed on
-  crit-4's pad-to-pad glissando: DOM state showed exactly one active pad
-  throughout the drag, never both, never neither.
-- Verifying "sound came out" (the analyser-splice technique two entries up)
-  is a different, weaker claim than "the *right* pitch came out" — the first
-  only proves *some* signal reached the destination, the second proves the
-  content matches what the interaction should have produced. To check pitch,
-  not just liveness, read `analyser.getFloatFrequencyData` and take the
-  peak bin (`peakBinIndex * ctx.sampleRate / analyser.fftSize`), then compare
-  against the expected note's frequency (within one bin's width, e.g.
-  ±23Hz at `fftSize: 2048` and a 48kHz context). On crit-4 this confirmed the
-  live output pitch actually tracked the pad under a real mouse drag, not
-  just that oscillators existed. One trap: if the instrument has *any* decay
-  tail (a release envelope, a feedback delay/echo), reading the analyser
-  immediately after switching notes can still show the *outgoing* pitch
-  dominant — that's the tail genuinely still sounding, not a bug in the new
-  note. Re-read after the release envelope's own duration has elapsed (Drift's
-  is 350ms; a longer delay/feedback network can keep the old pitch audible
-  for noticeably longer than the dry envelope alone) before concluding a
-  pitch transition failed to happen.
-- A continuous parameter the copy claims controls timbre (Drift's "move up
-  and down to brighten or darken the sound", a filter cutoff swept by
-  pointer/arrow-key position) needs the same audio-domain proof as pitch,
-  not just a DOM/CSS-variable check — reading `--brightness` or
-  `masterFilter.frequency.value` only proves the app's own bookkeeping
-  moved, the same gap the pitch-vs-liveness entry above already named for
-  note-on. Confirmed live on crit-4: held a note with a genuine
-  `mouse down` (real gesture, resumes the context), then swept brightness
-  with real `agent-browser press ArrowDown`/`ArrowUp` while still held,
-  reading the spliced analyser's `getByteFrequencyData` banded into
-  low/mid/high frequency ranges after each sweep. High-band (4–6.5kHz)
-  energy was genuinely zero at dark and mid brightness and only appeared
-  once bright (2.8), with mid-band (1.5–3kHz) energy climbing
-  monotonically dark→default→bright (7.5→8.5→14) — confirms the lowpass
-  sweep is actually audible, not just a CSS custom property changing.
-  Console stayed clean throughout. "Checked, confirmed correct" outcome,
-  no code change. Worth doing on any future crit whose copy names a
-  specific audible effect of a continuous control (not just a note
-  on/off), since that's exactly the class of claim a DOM-only check can't
-  verify.
-- **"The sensor battery is exhausted" and "there's nothing left to find" are
-  different claims — don't conflate them.** After six runs' worth of
-  axe-core/html-validate/Lighthouse/CWV/keyboard/audio-domain checks on
-  crit-4 (Drift) all came back clean, a seventh run re-read the brief's own
-  interaction prose one clause at a time against the *current* code instead
-  of reaching for another synthetic probe, and found a real bug none of
-  those sensors could ever have caught: "playable with whatever is at hand"
-  implies a Tab-focused pad activated by Enter/Space should sustain for as
-  long as it's held, same as a pointer or a home-row key — but the code
-  gave it a hardcoded 180ms blip via a `click`+`setTimeout` regardless of
-  hold duration. No accessibility/HTML/performance tool asserts on "does
-  holding a key sustain a note for the actual hold duration," because
-  that's a claim about *timing behaviour under a specific interaction
-  pattern*, not structure or a score. The general technique: when the usual
-  sensor battery reads as exhausted, derive fresh checkable claims straight
-  from the brief's own sentences (not the spec's checkable-invariant
-  subset, the fuller prose) and test each one against the live code — a
-  different search than running more automated tools, and it can still
-  turn up something real even after the tools are genuinely dry.
-  **This held a second time, not just once:** an eighth run re-applied the
-  same clause-by-clause technique to the *previous* fix (the
-  blur/visibilitychange stuck-note fix, itself found this same way) and
-  found it only covered the whole page losing focus, never focus moving
-  *within* the page — holding Space on a pad, then pressing Tab to the next
-  pad without releasing, left the first pad droning forever, because a
-  still-held key's eventual `keyup` targets whichever element currently has
-  focus, not the one focused when the key went down. Fixed with a
-  `focusout` listener (fires the instant a pad loses focus, for any
-  reason). The pattern worth trusting going forward: **each fix to a
-  press-and-hold interaction opens a fresh clause worth re-deriving**,
-  because the fix itself is new code the brief's prose hasn't been checked
-  against yet — this isn't a fixed list to exhaust once, it's a technique to
-  reapply after every change to hold/sustain logic specifically.
-- The brightness/filter-sweep audio-domain check logged above (the one that
-  confirmed the vertical control is audible, not just a CSS variable) had
-  only ever driven the sweep via `agent-browser press ArrowUp`/`ArrowDown`
-  while a note was held with the mouse — never via the actual pointer-drag
-  path (`pointermove` → `updateBrightnessFromClientY`) that the page's own
-  copy names as the primary way to do it ("move up and down to brighten or
-  darken the sound"). Those are two different code paths in `main.ts` and
-  a bug in one wouldn't show up testing the other. Verified on crit-4
-  (2026-08-23, 71h-to-cutoff) with a genuine `agent-browser mouse down` on
-  a pad followed by real `mouse move` to the bottom then the top of the
-  viewport (same x, so the note itself doesn't change pad): the spliced
-  analyser read low-band-only energy with `--brightness` at 0.028 near the
-  bottom, and real mid/high-band energy appearing (11.8/2.3) with
-  `--brightness` at 0.954 near the top — confirmed audible, not just a
-  bookkeeping variable. Release (`mouse up`) cleared the pad's `.active`
-  class immediately, no stuck state. "Checked, confirmed correct," no code
-  change. General lesson matching the arrow-key-vs-drag distinction
-  elsewhere in this file: two input paths that both claim to drive the same
-  parameter are two separate claims to verify, not one — confirming one
-  doesn't cover the other.
-- Applying the same clause-by-clause technique a third time to the
-  `focusout` fix itself (does releasing on *any* focus-loss reason ever end a
-  note the player didn't mean to end — e.g. a pointer chord stealing focus
-  away from a keyboard-held pad) came back clean this time, not another bug.
-  Confirmed live on crit-4: focused pad A via `.focus()`, dispatched a
-  synthetic `keydown` for Space (sustaining `focus-a`), then drove a *real*
-  `agent-browser mouse down`/`mouse up` on pad S — `document.activeElement`
-  stayed `a` throughout, both pads' `.active` classes were true
-  simultaneously (a genuine cross-modal chord), and releasing the keyboard
-  note afterwards worked normally. The reason it doesn't break: the existing
-  `pointerdown` listener already calls `event.preventDefault()` (originally
-  added to stop scrolling/text-selection on drag), and that same
-  `preventDefault()` also suppresses the browser's default click-to-focus
-  behaviour for that pointer, so a pointer chord never steals DOM focus away
-  from a keyboard-held pad in the first place. Worth recording as the reason
-  a fix works, not just that it does — the next run doesn't have to
-  re-diagnose *why* pointer input can't defocus a held pad if it ever
-  revisits this. General lesson for the clause-re-derivation technique:
-  every reapplication doesn't have to find a new bug — "checked this
-  specific edge case, confirmed the existing code already handles it and
-  here's the mechanism" is exactly as legitimate an outcome as a fix, and is
-  cheaper to write down than to re-derive from scratch next time.
-- The clause-re-derivation technique above works on the **code's own
-  comments**, not just the brief's prose — a comment asserting *why* a line
-  exists (e.g. "`preventDefault()` here stops X from also happening") is a
-  testable claim exactly like a brief sentence is, and one this agent wrote
-  itself is no more trustworthy unverified than one read from outside. To
-  check a preventDefault-based double-activation guard live (does pressing
-  Enter/Space on a focused button actually suppress the native synthetic
-  click, or does it sneak through and double-fire a separate click handler),
-  DOM/`.active`-class state can't tell the two cases apart — a doubled
-  handler call is often idempotent at the DOM layer even when it created a
-  second live audio node underneath. Patch the actual node-creation call
-  instead: `agent-browser eval` to wrap `AudioContext.prototype
-  .createOscillator` with a counter before the interaction, reset it, run
-  one real `agent-browser press Enter` (or `Space`) on a focused element,
-  then read the counter — 1 confirms the guard holds, 2 would confirm a real
-  double-trigger. Confirmed clean on crit-4's Tab+Enter/Space fix
-  (2026-08-23, 64h-to-cutoff): both keys produced exactly one oscillator,
-  and a plain `.click()` with no keydown/keyup at all (the actual
-  assistive-tech path the fallback handler exists for) also produced
-  exactly one, confirming both branches are mutually exclusive in practice,
-  not just in the comment's claim.
-- **The `pointerPads` Map has real independent-multi-touch logic that no
-  prior audio-domain check had ever exercised through its own code path.**
-  Every earlier "multi-voice chord" check (headroom, glissando, brightness
-  sweep) drove at most one genuine pointer at a time and layered any
-  further voices via synthetic `keydown` — a different map (`voices` keyed
-  by `key-x`/`focus-x`) than the one two real simultaneous touches would
-  use (`pointer-x` keyed by `pointerId`). Confirmed live on crit-4
-  (2026-08-23, 58h-to-cutoff) with genuinely independent synthetic
-  `PointerEvent`s carrying `pointerType: 'touch'` and distinct
-  `pointerId`s (real multi-touch hardware is still untestable here, per
-  the iOS-provider entry above, but this is the first check to drive
-  *this specific map* with more than one concurrent pointer identity,
-  which is the part of the code the hardware gap actually leaves
-  unverified): two simultaneous touch pointers on separate pads produced
-  exactly one oscillator each; releasing one left the other's `.active`
-  state and oscillator untouched; and sliding one touch pointer across to
-  a third pad (a touch-typed glissando) released the pad it left,
-  activated the new one, and left the second, steady touch pointer
-  completely unaffected throughout — confirmed via a
-  `createOscillator`-call counter (2 → 3, never spuriously higher) and a
-  clean `agent-browser console`/`errors` read. "Checked, confirmed
-  correct," no code change. General lesson matching the arrow-vs-drag and
-  headroom entries above: a map keyed by an identity (here, `pointerId`)
-  needs its *cardinality* tested, not just its single-entry behaviour —
-  confirming one touch works says nothing about whether two touches stay
-  independent until it's actually tried.
-
-- **When the technical-sensor well and clause-by-clause re-derivation both run
-  dry, re-read the stylesheet fresh against "a real device," not another
-  synthetic-event probe.** On crit-4's thirteenth run (2026-08-24,
-  47h-to-cutoff), five straight prior runs had found nothing new via either
-  route. Re-reading `styles.css` with the question "what platform-default
-  touch behaviour has never been checked" (not "what does the app's own
-  code do wrong") found a real gap: `.pad` had no
-  `-webkit-tap-highlight-color` override, so Android Chrome/WebKit paint
-  their default semi-transparent gray-black rectangle over every tap —
-  independent of `touch-action: none`, `user-select: none`, or
-  `appearance: none`, none of which touch this property. Confirmed via web
-  search this default is still current (not stale knowledge) before
-  fixing. Couldn't verify the visual artifact directly — same
-  `xcrun simctl`/`-p ios` gap logged above blocks any real touch-emulation
-  screenshot in this sandbox — so this was a justified pre-emptive fix
-  (real, well-documented default; zero cost since the pad already gives
-  richer feedback via its own `.active` class), not a verified-then-fixed
-  bug like the others in this file. Worth naming as its own category: some
-  real defects in a touch-first crit are only reachable by asking "what do
-  browsers do by default that this stylesheet hasn't overridden," not by
-  running another tool or re-deriving another brief clause — CSS-property
-  literacy as its own deepening lens, distinct from both.
-
-- **`touch-action: none` is scoped like any other CSS property — set it on
-  the actual drag/zoom surface, never on `body`/`html` as a blanket fix for
-  scroll interference during a pointer drag.** MDN's own docs warn against
-  applying it broadly: it disables *all* browser-handled panning and
-  zooming on the element it's set on, including pinch-zoom, so a page-wide
-  `touch-action: none` blocks low-vision touch users from zooming anything
-  on the page, not just the interactive surface it was meant to protect.
-  MDN names the correct scope directly — an element with its own custom
-  drag/zoom behaviour, "a map or game surface" — which generalises to any
-  future crit with a draggable canvas, slider, or multi-touch pad row.
-  Confirmed via `getComputedStyle(el).touchAction` before/after scoping
-  down from `body` to the specific interactive container; real touch
-  pinch-zoom itself stays unverifiable in this sandbox (same
-  `xcrun simctl` gap as the tap-highlight entry above), so this fix is
-  grounded in MDN's documented behaviour, not a screenshot of the gesture.
-  Found on crit-4 (2026-08-24, 40h-to-cutoff) by following up on the prior
-  run's own flagged lead (pinch-zoom/user-scaling, in its "next action"
-  note) rather than inventing a fresh angle — worth re-reading a prior
-  run's stated next-action list before reaching for a brand new technique.
-
-- **A third instance of the CSS-property-literacy lens (see the tap-highlight
-  and touch-action entries above): `appearance: none; border: none` on a
-  custom-styled control is a specific, real gap under `forced-colors: active`
-  (Windows High Contrast mode), not just a theoretical one.** MDN documents
-  this as "the classic button problem" — `background-image` (gradients
-  included) and `box-shadow` are both forced to `none` in that mode, so any
-  element relying on either for its visible shape/boundary, rather than a
-  real `border`, effectively disappears. On crit-4's `.pad` (a round button
-  whose entire circle came from a radial-gradient background plus a glow
-  `box-shadow`, no border at all) this meant a pad would render as a bare
-  letter with no boundary under high contrast — found on the fifteenth and
-  final run (2026-08-24, 34h-to-cutoff) by extending the same "what does the
-  platform do by default that this stylesheet hasn't overridden" question one
-  step further than the tap-highlight/touch-action findings had gone. Fixed
-  with `@media (forced-colors: active) { .pad { border: ...ButtonBorder } }`
-  — MDN's own documented fix shape, using `ButtonBorder`/`Highlight` system
-  colors rather than fixed colors so it stays correct across a user's chosen
-  contrast theme. Same epistemic status as the other two: `agent-browser` has
-  no forced-colors emulation, so this is grounded in documented platform
-  behaviour, confirmed only by `getComputedStyle` showing the rule doesn't
-  leak into ordinary mode, not a screenshot of the failure or the fix. Any
-  future crit with a custom-styled interactive element (a button, a slider
-  thumb, a custom checkbox) that gets its shape from `background`/`box-shadow`
-  rather than a `border` should get this same check — grep the stylesheet for
-  `appearance: none` combined with `border: none` as the specific pattern to
-  look for.
-
-- **A fourth instance of the CSS-property-literacy lens: `touch-action: none`
-  only suppresses browser-handled pan/zoom gestures, not iOS Safari's
-  separate long-press callout (context-menu/copy) and text-selection
-  magnifier.** Confirmed via web search of MDN and current sources that
-  `-webkit-touch-callout: none` is the distinct, correct property for the
-  callout, and pairing it with `-webkit-user-select`/`user-select: none`
-  (to also stop the magnifier) is the documented fix shape — the two
-  properties address genuinely different platform behaviours and neither
-  substitutes for the other. Found on crit-5 (2026-08-31, 40h-to-cutoff)
-  applying the same "what does the platform do by default that this
-  stylesheet hasn't overridden" question to `#game`, which already had
-  `touch-action: none` and `-webkit-tap-highlight-color: transparent` but
-  nothing for the callout. This one carries real stakes beyond cosmetics:
-  the element in question is the exact surface a sustained touch-hold
-  drags across, so an uncontrolled callout mid-drag would interrupt actual
-  gameplay on iOS, not just look untidy. Same epistemic status as the
-  other three: no real iOS host in this sandbox (the recurring
-  `xcrun simctl` gap) to trigger the callout and confirm it's actually
-  suppressed, so this is a pre-emptive, documentation-grounded fix,
-  confirmed only by `getComputedStyle` showing `user-select: none` applied
-  and scoped to the one element. Any future crit with a draggable/
-  long-press-driven touch surface should get all four checks from this
-  lens together — tap-highlight, touch-action scope, forced-colors
-  border-loss, and now touch-callout/user-select — rather than stopping
-  once the first one or two are found.
-
-- **For a game/interaction whose canvas resolution is JS-driven off
-  `getBoundingClientRect()` and only resynced on a `resize` event, the
-  `documentElement.style.zoom` technique used elsewhere in this log for
-  WCAG 1.4.10 reflow checks can produce a false positive, not a real bug.**
-  On crit-5, forcing `style.zoom = '2'` squashed every canvas-drawn circle
-  into an ellipse — the canvas's pixel buffer (set once at load/resize
-  time) no longer matched its now-differently-proportioned rendered box.
-  Traced before fixing anything: `style.zoom` doesn't fire a `resize`
-  event and doesn't change `window.innerWidth` in this sandbox — confirmed
-  directly (`window.__resizeFired` stayed 0, `innerWidth` unchanged across
-  the zoom toggle). That matters because neither real zoom mechanism a
-  visitor could actually use reaches this state: real desktop browser zoom
-  (Ctrl-+/-) *does* resize the layout viewport and *does* fire `resize`
-  (confirmed by that same app's `resize()` handler already producing
-  correctly round circles at both marking viewports under ordinary,
-  non-`style.zoom` use); real mobile pinch-zoom *never* resizes the layout
-  viewport at all (confirmed via web search — pinch/pan only change the
-  *visual* viewport, a distinct concept from the *layout* viewport that
-  `getBoundingClientRect()` reads from, per the VisualViewport API's own
-  raison d'être), so it can't desync the buffer either. `style.zoom` is
-  useful for plain DOM/CSS reflow checks (confirmed clean on earlier,
-  non-canvas crits) but is not a faithful proxy for *either* real zoom
-  mechanism on an element whose size is cached in JS off
-  `getBoundingClientRect()` — don't diagnose a canvas-squash finding under
-  `style.zoom` as a shippable bug without first checking whether the app's
-  own `resize` handler already covers real zoom's actual viewport-resize
-  behaviour, the way this one did.
-
-- **A third bug-finding technique, distinct from a fresh code read and from
-  brief-clause re-derivation: re-read an already-shipped fix's own stated
-  reasoning and check whether it generalised as far as it should have, not
-  just as far as the bug report that motivated it.** On crit-5, a fix that
-  suppressed Space's default page-scroll during a gameover restart was
-  reasoned about specifically in terms of Space ("the browser's own
-  page-scroll-down key"). That reasoning was correct but narrower than the
-  actual defect class: ArrowUp/ArrowDown share the exact same property (a
-  browser scroll default, no in-game use) but were never covered, and not
-  just during gameover — during ordinary play too, since nothing in the
-  handler ever reached a `preventDefault()` for either key in any state.
-  Confirmed live the same way the original fix was: a real short viewport
-  with genuine overflow, a real keypress, `window.scrollY` before/after.
-  The general check: whenever a fix names the *specific* key/event/element
-  that triggered the bug report, ask what *property* of that key/event/
-  element actually caused the problem, then check every sibling that
-  shares the same property, not just the one instance already fixed. This
-  is a different search from re-reading the file fresh (which looks at
-  what the code does) or re-deriving brief clauses (which looks at what
-  the brief promises) — it looks at whether a past fix's own justification
-  covers its full stated scope.
-
-- **Axe-core cannot evaluate CSS colours written in `oklch()`/relative
-  colour syntax (`oklch(from var(--x) ...)`) or over gradient/pseudo-element
-  backgrounds — it reports those nodes as "incomplete," not pass or fail,
-  so a real AA contrast failure on such an element produces zero
-  violations in an automated sweep.** Found on `comp4020-ass2-baishi`
-  (2026-09-14, an Astro course-site build on `astro-theme-university`):
-  the theme derives every semantic colour token from a brand's pinned
-  `--at-primary`/`--at-secondary` via `oklch(from var(...) ...)`, and a
-  card-title element reading `--at-accent` (pinned straight to the brand's
-  gold) was a real 3.43:1 against its background — under the 4.5:1 AA
-  minimum for normal text — with axe-core flagging nothing. The theme
-  ships its own `contrast.ts` module (`oklchToSrgb`, `contrastRatio`,
-  `AA_BODY_TEXT`/`AA_LARGE_TEXT`, `parseLightDarkOklchTokens`,
-  `tokenContrast`) specifically because of this gap, with a doc comment
-  inviting brand-layer packages to test their own token overrides against
-  it. Two things worth reapplying to any future `astro-theme-university`
-  course-site deliverable: (1) don't trust an axe-core 0-violations result
-  alone on a page using oklch-derived tokens — confirm suspect text/
-  background pairs live with `getComputedStyle` and manual contrast math,
-  the same way this fix was confirmed; (2) `contrast.ts`'s parser expects
-  tokens declared in the `light-dark(oklch(...))` form the theme's own
-  `tokens.css` uses — a brand package that instead pins flat hex literals
-  (as `astro-theme-slop`'s `slop.css` does) isn't directly testable with
-  those exported helpers without first reimplementing a hex→oklch
-  conversion the module doesn't provide itself. Judged that gap not worth
-  closing with a bespoke conversion for one card-title fix (see
-  `comp4020-ass2-baishi`'s `PROCESS.md`) — but a future deliverable
-  whose brand package pins tokens the same declarative way `tokens.css`
-  does could use `contrast.ts` directly, with no conversion needed.
-  **Correction (2026-09-15):** an earlier run on this same repo had traced
-  *all* of home's other axe "incomplete" nodes — nav links, the hero
-  heading, tag badges — to this same harmless gap and written that into
-  `PROCESS.md` as settled. That generalisation was wrong for one of them:
-  the hero heading was never actually measured, only assumed to match the
-  nav-link/tag-badge pattern because it shared the "incomplete" label. A
-  later run sampled the live rendered pixels behind the hero title (white
-  text over a photo behind a fixed black gradient overlay — exactly the
-  kind of background axe can't read) and found a real, marginal failure:
-  as low as 2.99:1, under even the 3:1 large-text minimum. Fixed by
-  darkening the raw hero AVIF: compositing any foreground colour over a
-  background with a **pure black** foreground is a linear scalar
-  (`compositeOver(black, alpha, bg) = bg * (1-alpha)`), so scaling the
-  source image's raw brightness by a measured factor (`sharp(...).linear(k,
-  0)`) darkens the on-page composite by that same factor `k`, regardless of
-  alpha or which vertical band a given viewport's responsive crop shows —
-  confirmed by re-measuring the worst point at both marking viewports after
-  the fix (~4.4:1, holding despite each cropping the source differently).
-  General lesson: axe's "incomplete" label names a *category* of node it
-  can't evaluate, not a verdict — some incomplete nodes really are false
-  positives (provably so, by hand-computing oklch token contrast) and some
-  are real failures nobody actually measured. Don't let confirming one or
-  two nodes in the category license writing off the rest of the same
-  category as "the same limitation, not a real defect" — each element
-  still needs its own live pixel measurement before being cleared.
-  **Extended (2026-09-17, eighth run):** a fix that clears AA against a
-  `light-dark()`-derived background is only verified in *one* colour
-  scheme unless checked in both — `agent-browser`'s default rendering is
-  light, so seven prior runs' contrast checks on this repo never exercised
-  dark mode at all. `astro-theme-slop`'s `slop.css` pins `--at-secondary`
-  as a flat hex (`#8a5c13`), not a `light-dark()` token, while the card
-  background `.at-card-title` sits on (`--at-bg`/`--at-bg-elevated`) *is*
-  `light-dark()`-derived from `--at-primary` — so the same fixed text
-  colour has a different, independently-computed contrast ratio in each
-  scheme. The original fix (light-mode 5.71:1, chosen specifically because
-  `--at-primary` failed light mode at 3.43:1) turned out to drop to 3.51:1
-  in dark mode — a fresh AA failure nobody had reason to look for, because
-  the check that motivated the original fix was itself scoped to light
-  mode only. Confirmed live via `agent-browser set media dark` + a
-  canvas-based oklch→sRGB readback (`ctx.fillStyle = oklchString; ctx.fillRect(...); ctx.getImageData(...)` —
-  canvas normalises any CSS colour syntax to sRGB bytes, useful whenever
-  `contrast.ts`'s own parser can't handle a mixed hex+`light-dark(oklch())`
-  pair, per the flat-hex-brand gap already logged above) computing the
-  same WCAG contrast formula `contrast.ts` uses. Fixed by discovering
-  primary and secondary are exact mirrors of each other across the two
-  schemes (primary clears dark at 5.82:1 where it fails light; secondary
-  clears light at 5.71:1 where it fails dark) and wrapping the CSS
-  override itself in `light-dark()`, rather than inventing a new colour —
-  `color: light-dark(var(--at-secondary), var(--at-primary))`. General
-  check for any future `astro-theme-university` deliverable: whenever a
-  brand-layer override pins a fixed colour against a theme surface to fix
-  or avoid an AA failure, verify it in *both* `light-dark()` states if the
-  surface it sits on is itself `light-dark()`-derived, not just whichever
-  scheme the checking tool happens to default to.
-  **Extended (`comp4020-final-baishi`, 2026-09-30):** two more root causes
-  land in the same "incomplete, not a verdict" bucket, on a plain
-  hand-authored site with no design-system tokens at all. (1) A colour
-  dimmed by an *ancestor's* `opacity` (not the element's own colour, and
-  not oklch) — axe can't resolve the composited result and reports
-  "incomplete" here too; a `.tagline a` inheriting its parent's
-  `opacity: 0.75` was a real 2.81:1 against the required 4.5:1. The fix
-  that generalises: never use `opacity` on a container to mute *some* of
-  its text while a child needs its own, different, fully-legible colour —
-  `opacity` composites the whole subtree as one group, so no child colour
-  value can opt back out of it; use a partially-transparent `color` value
-  on the muted text specifically instead, which only affects that one
-  box. (2) SVG `<text>` contrast axe structurally can't evaluate at all,
-  regardless of what's behind it — a `.zone-prompt` label at 0.7 fill-opacity
-  over a plain solid SVG rect was 2.86:1, no oklch/gradient/opacity-ancestor
-  involved, just plain SVG. Both found by hand-computing the actual WCAG
-  contrast formula against axe's own "incomplete" read, same technique as
-  every other entry in this bullet — worth doing on any element axe can't
-  score, not just the design-system-token cases logged above.
-
-- **An `<svg role="img">` suppresses every focusable descendant from the
-  accessibility tree, regardless of what `tabindex`/`role` that descendant
-  carries — adding `tabindex="0"` to a child of a `role="img"` element
-  looks fixed in a code read (the attribute is right there) and stays
-  structurally broken for a screen reader.** `role="img"` tells assistive
-  tech "treat this whole subtree as one flat image," which by the ARIA
-  spec discards any interactive semantics beneath it. Found on
-  `comp4020-final-baishi` (2026-09-30) fixing a drawing zone that had no
-  keyboard path at all: the zone-hit rect needed `tabindex`/`role="button"`
-  added, but the parent `<svg>` already had `role="img"` (correct while the
-  svg was pure decoration, wrong the moment part of it became a real
-  control). Fix: drop the svg's own `role` once it holds genuine
-  interactive content — its default SVG-AAM role (`graphics-document`) does
-  not suppress descendants — and give the *specific* interactive child its
-  own `role`/`tabindex`/`aria-label`. Confirmed with a real `agent-browser`
-  Tab walk reaching the control in the right order with a visible focus
-  ring; verifying via source-read alone (checking the child's own
-  attributes) would have missed the ancestor's suppression entirely. Worth
-  checking on any future crit with a canvas/SVG visualisation that later
-  grows an interactive element inside it — the `role="img"` decision made
-  when the element was purely decorative doesn't automatically get
-  revisited when it stops being decorative.
-
-- **A library's own bot-detection (`navigator.webdriver`) can make a real,
-  shipped behaviour structurally unobservable through `agent-browser`, a
-  distinct category from the iOS-simulator/print-media/zoom-emulation gaps
-  already logged above — those are missing CDP primitives, this is a
-  deliberate design choice the page's own code makes.** On
-  `comp4020-ass2-baishi`, `astromotion`'s first-run help-hint overlay (the
-  one styled component with a `prefers-reduced-motion` guard in the whole
-  deck stack) explicitly checks `navigator.webdriver === true` and never
-  renders at all for an automated view — confirmed live,
-  `agent-browser eval "navigator.webdriver"` returns `true` in this
-  environment, and the source comment names the reasoning directly
-  ("Any browser being driven programmatically... is not a viewer who needs
-  teaching the key bindings"). No amount of `agent-browser set media
-  reduced-motion` or session-storage clearing gets around this — the guard
-  fires before either would matter. Two things worth doing when this
-  pattern is hit again: (1) grep the dependency's own source for
-  `webdriver`/`isAutomated`/similar before spending time debugging why an
-  expected element never appears in a live check; (2) don't chase it
-  further when the gated code is upstream platform/theme code rather than
-  this deliverable's own content — the same course-vs-platform boundary
-  that already governs which `spec/` tests are this repo's to write.
-
-- **The assessment page's own HD artefact-band language — "holds up under
-  use it wasn't designed for: the keyboard, a resize mid-interaction" —
-  applies to a slide deck exactly as much as to an interactive prototype
-  like assignment-1's slider, and had never been checked against the deck
-  specifically across eight prior runs on `comp4020-ass2-baishi`.** The
-  deck is `astromotion`'s reveal.js-based component (`.reveal`/`.slides`/
-  `section.past/.present/.future`, `#/N` hash routing). Confirmed live
-  (2026-09-17): navigate several slides via real `agent-browser press
-  ArrowRight`, note the settled `window.location.hash`, then
-  `agent-browser set viewport` straight to the other marking size with no
-  reload — hash and the visually rendered slide (confirmed by screenshot,
-  not `document.body.innerText`, see the next point) both held steady
-  across the resize, console clean. "Checked, confirmed correct," no code
-  change — this is upstream platform code either way, so a bug here would
-  have been out of scope to fix (same boundary as the `navigator.webdriver`
-  and Tab-focus entries above), but the check itself is this deliverable's
-  to run since the marking rubric literally names it.
-  **Testing-technique trap found along the way:** `document.body.innerText`
-  is not a reliable read of "what slide is currently showing" on a
-  reveal.js deck — reveal keeps every slide's text in the DOM at all times
-  and hides the inactive ones via `hidden`/`display:none`, but
-  `innerText` on Chromium can still include hidden-element text in some
-  configurations, so two genuinely different hash states read back
-  *identical* `innerText` and looked like a stuck resize bug before a
-  screenshot (or `document.querySelector('section.present')`, reveal's own
-  "currently visible" class) proved otherwise. Also: reveal.js only updates
-  the URL hash on an actual slide transition, not on each fragment reveal —
-  a run of `ArrowRight` presses can show one hash-unchanged step (fragment
-  reveal) then a hash jump of more than 1 (a real slide transition past a
-  vertical-stack index), and that's normal reveal.js behaviour, not a
-  navigation bug, before concluding the number sequence itself is broken.
-
-- **A hand-rolled contrast checker inherits the exact same blind spot as
-  axe-core: neither can read an element whose real background comes from a
-  `background-image`/gradient rather than a solid `background-color`, and
-  both will misreport such an element rather than skip it cleanly.** Prior
-  dark-mode contrast checks on `comp4020-ass2-baishi` had only ever
-  verified the one element a specific fix targeted (the card-title AA
-  failure); a later run wrote a general-purpose sweep — walk every element
-  with direct text, resolve its colour and the nearest ancestor's opaque
-  `background-color`, convert both through a 1×1 canvas (handles oklch the
-  same way `contrast.ts` does), compute WCAG contrast, flag anything under
-  the size-appropriate AA threshold — and ran it via `agent-browser eval`
-  against every distinct page type in `set media dark`. Every page came
-  back clean except the home hero title, which flagged at a false
-  `ratio 1.02`: the walk-up-for-background-color loop, finding no ancestor
-  with an opaque solid colour under the hero's image+gradient stack, fell
-  through to an unrelated ancestor's colour instead of the real composite.
-  Confirmed as a checker artefact, not a real bug, by reading the source
-  directly rather than trusting the number: `.at-hero-title`'s `color` is
-  `var(--at-white)` and the scrim is `linear-gradient(to top, rgb(0 0 0 /
-  80%), ...)` — both fixed literals with zero `light-dark()` involvement
-  anywhere in the chain, so the hero's actual rendering is provably
-  scheme-independent, and the light-mode darkening fix from three runs
-  earlier already covers dark mode by construction. General lesson: any
-  bespoke or off-the-shelf contrast tool built on "read `background-color`
-  up the tree" needs the same exclusion axe-core effectively has for
-  image/gradient surfaces — a flag on exactly that class of element is
-  worth checking against the source before trusting it as a fresh
-  defect, and a clean sweep everywhere *else* is still worth having, since
-  it's the first time every page type (not just one previously-fixed
-  element) had ever been checked in dark mode at all.
-- **The same hand-rolled contrast checker's "walk up to the nearest opaque
-  ancestor" heuristic has a second, distinct blind spot from the
-  gradient/image one above: it also needs to check an element's own local
-  `background-color` before walking up at all, not just an ancestor's.** A
-  heading with its own solid highlight-box background (astro-theme-slop's
-  deck styling: an `<h1>` on a title slide sits on its own opaque amber
-  box, not the page's dark canvas) will falsely flag as invisible if the
-  checker skips straight to `getComputedStyle(document.body)` or otherwise
-  never samples the element itself — on `comp4020-ass2-baishi`'s week-1
-  deck this produced a `ratio 1.00` false alarm on the opening slide's H1,
-  which looked alarming (a near-black-on-near-black title, the single most
-  visible element in the deck) until walking the DOM from the H1 itself
-  confirmed its immediate background actually is the amber box
-  (`rgb(185,125,28)`), giving a real ratio of 5.57. Fix the checker to test
-  `el` before `el.parentElement`, not just walk ancestors. A second,
-  unrelated false positive found the same session: `astro-theme-university`'s
-  shared `.at-heading-anchor` permalink icon (the small "#" link next to
-  every H1/H2/H3 site-wide) reads as identical-color-to-background by
-  design — it's a hover-reveal affordance with a genuine `0×0`
-  `getBoundingClientRect()` when inactive (confirmed directly, not assumed),
-  so a checker that doesn't skip zero-size elements will flag it forever.
-  Both are checker bugs, not site bugs, and the second is theme code
-  (out of scope for this course's content either way, same boundary as the
-  `navigator.webdriver`/focus-ring findings above) — exclude
-  `.at-heading-anchor` and zero-size elements from any future run of this
-  checker. General lesson stacking on the entry above: a bespoke contrast
-  tool accumulates blind spots one exotic layout at a time (gradients, then
-  local-background boxes, then hover-reveal zero-size elements) — each
-  needs its own fix, and a clean result from an *earlier* version of the
-  checker doesn't mean a *later*, more thorough sweep with the same tool
-  won't need another correction first.
-- **A component that documents itself as "dark surfaces" should be checked
-  once for whether `set media dark`/`light` actually changes anything on
-  it before being swept "in dark mode" — if it doesn't, every such sweep on
-  that page is testing a scheme-invariant fixed palette, not exercising a
-  real light/dark toggle.** Confirmed directly on
-  `comp4020-ass2-baishi`'s deck (`src/decks/theme.css`'s own comment says
-  "Deck pages are dark surfaces"): `body`'s computed `background-color`
-  and `color` were byte-identical (`rgb(13,13,13)` / `rgb(230,230,230)`)
-  under `agent-browser set media dark` and the default (light) state. This
-  isn't a defect — the deck is deliberately always-dark, matching
-  `astromotion`'s own reveal.js convention of dark presentation surfaces
-  regardless of site theme — but it means a future run shouldn't credit
-  "checked the deck in dark mode" as distinct evidence beyond "checked the
-  deck," since there is no second state to have missed. What *is* worth
-  checking on a fixed-dark-surface deck, and hadn't been until this run:
-  every slide and every slide *class* the deck's own content actually
-  uses (`impact`, `quote`, `centered`, plain) — prior deck checks
-  (resize-mid-interaction, the very first dark-mode sweep) had only ever
-  looked at slide 1. Stepped through all 8 slides of the week-1 deck with
-  `agent-browser press ArrowRight` plus the corrected local-background
-  checker above; every heading/paragraph/list-item/link/blockquote across
-  all 4 classes passed AA at its own real local background. "Checked,
-  confirmed correct," no code change — but a genuinely new, non-repeated
-  check, not a rerun of the first slide's own already-clean result.
-
-- **A live 200%-zoom reflow check can uncover a reflow bug caused by several
-  stacked, individually-plausible CSS defaults rather than one obvious
-  mistake — trace each layer live rather than stopping at the first fix
-  that seems to help.** On `comp4020-crit7-baishi`'s reschedule form, a
-  cancel button ran off the right edge of a 390px viewport at 200% zoom
-  with no way to scroll it cleanly into view. Three separate causes were
-  stacked: (1) `input { min-width: 12rem }` can't shrink below that floor
-  for a narrow container — fixed with `min-width: min(12rem, 100%)`; (2)
-  **`<fieldset>` carries a UA-stylesheet default of `min-width:
-  min-content`** that silently overrides any container width regardless of
-  `overflow`/flex settings — a gotcha worth remembering on its own, since
-  nothing about a fieldset's *authored* CSS hints at it; fixed with an
-  explicit `fieldset { min-width: 0 }`; (3) an `inline-block`/`display:
-  inline` element (here, a `<form>` around the cancel button) with `max-
-  width: 100%` correctly caps its own computed width to the container, but
-  the browser can still position it starting mid-line, continuing from
-  preceding inline text's flow position, rather than forcing a line break —
-  so a "correctly sized" box still overflows past the container's right
-  edge. `getBoundingClientRect()` on the element itself distinguished this
-  from the first two causes (width correct, x-offset wrong); the robust fix
-  is `display: block` on the container so it always starts its own line,
-  not a width tweak. Diagnosed by toggling `element.style.display = 'none'`
-  via `eval` and re-measuring `body.scrollWidth` after each individual fix,
-  isolating which of the three was still contributing rather than assuming
-  one fix cleared all of it. General lesson, extending the existing
-  CSS-property-literacy lens (tap-highlight, touch-action, forced-colors,
-  touch-callout) to layout rather than just touch/contrast: a UA
-  stylesheet's element-specific intrinsic-sizing defaults (fieldset's
-  `min-content`, similarly `<button>`/`<select>`/`<img>` all have their own)
-  are easy to forget precisely because the authored CSS never mentions
-  them — worth a deliberate check on any form-heavy layout being tested at
-  narrow widths or high zoom, not just the properties this agent has
-  already been burned by once.
-
-- **Re-fetching a course source and confirming "seeded data matches
-  verbatim" verifies the data, not any prose describing which entity that
-  data belongs to — those are two different claims, and a run can pass the
-  first check every single time while a wrong claim about the second sits
-  unnoticed for many runs.** On `comp4020-crit7-baishi`, `README.md`'s
-  opening paragraph claimed the week-9 reschedule exception belonged to
-  "this run's own group, Baishi" — but the seed code (`SEED_EXCEPTIONS` in
-  `src/lib/db.ts`) had correctly attached both real week-9 exceptions to
-  Shitao and Bada (a different tutor's two Monday groups) since the very
-  first build run, matching the published `api/crit-groups.json` exactly.
-  Ten prior runs' own "re-fetch the source, confirm no drift" checks all
-  compared seeded *values* (dates, times, reasons) against the source and
-  correctly found none — that check has no way to catch a *narrative*
-  claim about which row those values sit on, because it never reads the
-  prose at all. Only found once a run applied the clause-by-clause
-  re-derivation technique (already used on `CLAUDE.md`) to `README.md` for
-  the first time and checked its claims against the actual seed code and a
-  live-rendered page, not against the source JSON. General lesson: a
-  "confirmed no drift against the source" result and a "confirmed the
-  repo's own prose about that data is correct" result are different checks
-  — running the first repeatedly is not a substitute for running the
-  second at least once, and any prose file naming a specific
-  row/entity/group as an example is worth that second check specifically.
-- **When a starter template's core entity/feature gets replaced (a guestbook
-  swapped for a real app), grep every page for the starter's own vocabulary,
-  not just the page the replacement work actually touched.** On
-  `comp4020-crit7-baishi`, the crit-roster build replaced the starter's
-  guestbook everywhere it mattered functionally — schema, routes, the home
-  page's own nav said "Roster" from the first run — but the secondary
-  `readme.astro` page's nav still said "Guestbook" two runs later, because
-  no run had ever edited that specific line and a green `pnpm check`/
-  axe-core sweep has no way to catch a stale label that's neither broken
-  markup nor a failing test. Found by a plain fresh read of the page, not a
-  tool. Same shape as the crit-5 palette-swap lesson already logged above
-  (grep the whole repo for old hex literals, not just the file the change
-  was made in) but for prose/copy instead of colour — whenever a rename or
-  entity swap lands, `grep -ri` the starter's old name across every page,
-  not just the ones the diff touched.
-- **"Docs-only, no redeploy needed" is only true if the file in question
-  isn't actually imported/rendered by the app itself — check that before
-  relying on the judgement call, don't just assert it.** On
-  `comp4020-crit7-baishi`, a run that fixed a factual error in
-  `README.md` reasoned "docs-only change with no effect on the running
-  app, so no redeploy this run" — correct for `CLAUDE.md`/`PROCESS.md`,
-  which never render anywhere, but wrong for this repo's `README.md`:
-  `src/pages/readme.astro` does `import * as readme from "../../README.md"`
-  and compiles it at build time, serving it at `/readme/`, so the fix sat
-  unshipped on `origin/main` for two further runs while the live app kept
-  serving the old wrong claim. Caught by literally `curl`-ing the live
-  `/readme/` route and comparing it against the current source rather than
-  trusting the record of what was pushed — the doctrine's own "verify the
-  live URL, not the local build" line, applied for the first time in this
-  repo's history to a docs-only change specifically. Fixed by rebuilding,
-  confirming the fresh `dist/server/entry.mjs` served the corrected text
-  locally, then a plain redeploy — no code change needed, the fix already
-  existed in git. General check for any future deliverable: before deciding
-  a markdown/content file's edit doesn't need a redeploy, grep the app's
-  own source for an `import` of that file (or any build-time inclusion) —
-  a README that's compiled into a served page is a different category from
-  a pure process-narrative file, even though both live at the repo root
-  and look interchangeable at a glance.
-
-- **Read the parent assessment's brief, not only the week's crit brief,
-  on a multi-crit deliverable.** `comp4020-final-baishi`'s final-project
-  brief says `PROCESS.md` runs 900–1100 words and is *rewritten, not
-  appended* at each week 9–11 crit, and `README.md` is marked at 400–600.
-  Twelve runs each appended a "pass" section from the crit-8 brief alone,
-  growing PROCESS.md to 4236 words before a thirteenth run caught it. On
-  this repo: edit PROCESS.md in place to describe the project as it
-  stands; git and the `/ship` tags keep the history.
-
-## Open threads for future runs
-
-- `comp4020-final-baishi` is the final project (crits 8–10, then
-  submission week 12) — a much longer-lived deliverable than a crit, one
-  repo carried all the way to the November deadline. First run,
-  2026-09-30, 166h to crit 8's ("It's alive!") cutoff: repo arrived as the
-  bare template (busybox placeholder, empty `CLAUDE.md`/`README.md`/
-  `PROCESS.md`). Picked the concept and built a real proof-of-life slice:
-  **The Scroll**, a shared ink canvas that only ever grows — one blank
-  strip at the right edge of an SVG scroll, one mark per visit (mouse/pen/
-  touch via Pointer Events, a variable-width brush from real pointer
-  speed), no edit, no delete, no accounts. Chose this over the brief's own
-  named "median answer" (a chat room with the nouns swapped) by grounding
-  it in three real sources cited in `README.md`: Robin Sloan's
-  [home-cooked-app essay](https://www.robinsloan.com/notes/home-cooked-app/),
-  Ben Hoyt's [small-web essay](https://benhoyt.com/writings/the-small-web-is-beautiful/),
-  and [Hundred Rabbits' own account of their practice](https://sourcehut.org/blog/2021-12-08-100-rabbits-interview/).
-  Stack: Astro (server output, Node adapter standalone) + `better-sqlite3`
-  directly (no ORM — one table, `CREATE TABLE IF NOT EXISTS`, two prepared
-  statements), argued in `PROCESS.md` on trade-off terms rather than
-  asserted. Five commits pushed to `origin/main` (`d654ec9`): app scaffold,
-  `spec/scroll.test.ts` (persistence over a fresh HTTP request, input
-  validation, no-delete), `README.md`/`CLAUDE.md` (the "good" argument and
-  the harness rules it implies), a real bug fix, `PROCESS.md` (955 words,
-  already within the final brief's eventual 900–1100 band). The bug: a
-  live `agent-browser` pointer-drag test caught a tap-only mark that saved
-  correctly but rendered invisibly (see the new dedicated SVG
-  bare-moveto `MEMORY.md` entry above) — fixed at the data layer per
-  `CLAUDE.md`'s own rule, not just the client call site that triggered it,
-  with a spec assertion added. Verified against a real `docker build` +
-  `docker run --tmpfs /data` matching CI's exact command (needs `sudo` in
-  this sandbox — see the new dedicated entry above), then deployed via
-  `flyctl deploy --remote-only --ha=false -a comp4020-final-baishi` and
-  verified live with real `agent-browser` pointer drags at both marking
-  viewports: a mark drawn, page reloaded, mark still there — the crit's
-  actual "trace persists" bar, confirmed on the deployed app itself, not
-  just locally. Repo deliberately left private (the harness flips it
-  public at cutoff, not this agent, per the standing
-  harness-owned-shipping entry elsewhere in this file). Deliberately
-  deferred and named as such in `README.md`/`CLAUDE.md`: no enforced
-  "one mark per visitor" (judged, not enforced — real identity is crit 9's
-  "All at once" job), no real-time layer (also crit 9), no server-side
-  logging (crit 10). Not the last run for crit 8 — `reflections/crit-8.md`
-  correctly not yet written. See `now.md` for the flagged next angle: the
-  drawing zone is currently pointer-only with no keyboard way to draw at
-  all, a real gap worth deciding on purpose rather than leaving implicit.
-  A second run, 2026-09-30, 159h-to-cutoff, closed that exact gap and it
-  surfaced two real, non-obvious bugs — see the two new dedicated
-  `MEMORY.md` entries above for both mechanisms (an `<svg role="img">`
-  suppressing a focusable child regardless of its own attributes; two AA
-  contrast failures axe reported as merely "incomplete" — an
-  opacity-dimmed ancestor and plain SVG text, neither an oklch/gradient
-  case like the design-system-token findings elsewhere in this file).
-  Fixed keyboard access
-  ([`fbb528d`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-baishi/commit/fbb528d))
-  and both contrast failures
-  ([`874ccac`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-baishi/commit/874ccac)),
-  verified with a real `agent-browser` Tab walk plus a real Enter/Space
-  press against the exact CI container (`docker build` + `docker run
-  --tmpfs /data`), `pnpm check` green (6/6) throughout, axe-core 0
-  violations after the fix. `PROCESS.md` extended with both commits cited.
-  Redeployed and reverified live: a real Tab+Enter on
-  `https://comp4020-final-baishi.fly.dev/` reached the zone and left a
-  mark a fresh `curl` still shows. 4 commits pushed (`ba4666b`). Not the
-  last run — no reflection yet, correctly. See `now.md` for what's
-  untried: `pnpm audit`/`outdated` (not yet run on this repo at all), a
-  200%-zoom reflow check, and a multi-mark test of the "since &lt;date&gt;"
-  line as marks accumulate.
-  A third run, 2026-09-30, 153h-to-cutoff, worked that exact list. `pnpm
-  audit` clean; `pnpm outdated` had three genuinely in-range patches
-  (`jsdom`, `vitest`, `@types/node`, none crossing the `^` pin) applied via
-  a plain `pnpm update`, `pnpm check` re-verified green against the exact
-  CI container before committing (`ea9fa14`). The 200%-zoom reflow check
-  and the multi-mark pointer-drag test (two further genuine drags on top
-  of the two marks the spec suite itself had already created) both came
-  back "checked, confirmed correct" — see `PROCESS.md`'s new third section
-  for the reasoning on the zoom check specifically (the drawing zone's own
-  segment can exceed the scrollable strip's width at 200% zoom on mobile,
-  judged consistent with the scroll's by-design pan behaviour rather than
-  a defect, since the zone-hit control itself stays full-width and
-  reachable regardless). Both findings and the dependency bump committed
-  and pushed (`83269d1`). No redeploy — nothing this run changes
-  runtime/user-visible behaviour. Not the last run — no reflection yet,
-  correctly. See `now.md` for what's left: a live end-to-end keyboard
-  walkthrough (Tab, Enter, reload, confirm), and the clause-by-clause
-  re-derivation technique against `README.md`/`CLAUDE.md` (not yet tried on
-  this repo at all, despite repeatedly finding real gaps elsewhere in this
-  file).
-  A fourth run, 2026-10-01, 142h-to-cutoff, worked that exact list and the
-  clause-by-clause re-derivation paid off immediately: see the new
-  dedicated `MEMORY.md` entry above (extending the crit-5 palette-swap
-  lesson) for the mechanism — the second run's own contrast fix
-  (`874ccac`) introduced `--link` because `--accent` alone fails AA, and
-  used it in `global.css`'s `.tagline a`, but never checked
-  `readme.astro`'s own scoped `<style>` block, which still used `--accent`
-  directly for every link rendered from `README.md`. Every hyperlink on
-  `/readme/` — the crit's own "real material" page — was under the AA
-  floor. Fixed, along with the same file's `blockquote` rule still using
-  `opacity` (the exact anti-pattern `874ccac` rewrote `.tagline` to avoid,
-  dormant only because `README.md` has no blockquote yet)
-  ([`7e2939a`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-baishi/commit/7e2939a)).
-  The other flagged candidate — a full keyboard-only draw-then-reload
-  walkthrough, not just the keydown-persists check the second run already
-  did — also came back clean: a real `agent-browser` Tab walk reached the
-  link then the drawing zone in order, a real `Enter` press left a mark,
-  and a completely fresh navigation (not the client's own
-  `location.reload()`) showed it still there, against the exact CI
-  container. `pnpm check` green (6/6), axe-core 0 violations on both pages
-  after the fix. `PROCESS.md` extended, pushed (`b8acc7d`), redeployed and
-  reverified live (the corrected link color read back correctly on
-  `https://comp4020-final-baishi.fly.dev/readme/`, console clean). Not the
-  last run — no reflection yet, correctly. No new self-administered angle
-  is currently flagged; a future run could try `pnpm audit`/`outdated`
-  again (last checked at the third run) or extend the clause-by-clause
-  read to the Dockerfile/CI workflow files, which haven't had this
-  treatment yet.
-  A fifth run, 2026-10-01, 135h-to-cutoff, worked that exact candidate and
-  found a real, if purely infrastructural, bug: the Dockerfile's own
-  comment, and `PROCESS.md`'s stack section repeating it, claimed
-  `python3`/`make`/`g++` were installed as the fallback for when no
-  prebuilt `better-sqlite3` binary matches the image's node/arch — see the
-  new dedicated `MEMORY.md` entry above for the mechanism (the package has
-  no install/postinstall script at all; it bundles prebuilt N-API binaries
-  per platform/arch directly). `pnpm audit`/`outdated` were re-run first
-  (clean; both outdated entries still major-only, correctly left alone).
-  Removed the apt install from both Docker stages, verified with a
-  `--no-cache` rebuild against the exact CI command (`docker build` +
-  `docker run -d --init --tmpfs /data`): `pnpm check` green (6/6), a real
-  `curl` POST round-tripped a mark. Fixed and pushed (`961bafc`),
-  redeployed (`flyctl deploy --remote-only --ha=false`, image now 149MB),
-  live `/` and `/readme/` both 200, a real mark round-trip still showing
-  correctly on the persistent Fly volume. Not the last run — no reflection
-  yet, correctly. No new self-administered angle is currently flagged; a
-  future run could extend the clause-by-clause technique to
-  `.github/workflows/checks.yml` itself (not yet tried, only the Dockerfile
-  has been), or re-check `pnpm audit`/`outdated` again after enough time
-  has passed.
-  A sixth run, 2026-10-01, 129h-to-cutoff, worked that exact candidate:
-  `checks.yml`'s own comments all checked out clean against `fly.toml`/
-  `.github/trufflehog.yml` (no drift), and `pnpm audit`/`outdated` were
-  unchanged. With nothing flagged, re-read `src/lib/draw.ts` fresh and found
-  a real bug matching the pointer-identity shape already logged for crit-4/
-  crit-5 — see the new dedicated `MEMORY.md` entry above (the third instance
-  of that shape, and the worst: a stray second pointer's release could
-  silently drop the real pointer's own mark entirely via an unhandled
-  promise rejection, with the drawing zone then permanently inert for the
-  rest of that page load and no visible sign anything had gone wrong).
-  Confirmed live with two-pointer synthetic sequences before and after the
-  fix, against both a local CI-matching container and the live deployment.
-  Fixed by tracking `drawingPointerId` instead of a bare boolean
-  ([`75bc2b5`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-baishi/commit/75bc2b5)),
-  written up as a sixth `PROCESS.md` moment, including why no `spec/` test
-  covers it (jsdom has no `createSVGPoint`/`getScreenCTM`/
-  `setPointerCapture` at all, confirmed directly)
-  ([`03cedee`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-baishi/commit/03cedee)).
-  `pnpm check` green (6/6) against the exact CI container, redeployed and
-  reverified live (the same repro against `https://comp4020-final-baishi.
-  fly.dev/` left the real mark unaffected, count incremented, console
-  clean). Not the last run — no reflection yet, correctly. No new
-  self-administered angle is currently flagged; a future run could try the
-  CSS-property-literacy lens on `global.css` (not yet applied to this repo)
-  or re-read `src/pages/api/strokes.ts`/`layout.ts` for a similar gap.
-  A seventh run, 2026-10-02, 118h-to-cutoff, worked that exact list. The
-  CSS-property-literacy lens, applied to `global.css`'s one real touch
-  surface for the first time, found `.zone-hit` (the drawing zone — a
-  sustained-touch-drag surface, the same shape as crit-4's pad and crit-5's
-  game canvas, both of which already needed this exact fix) had neither a
-  tap-highlight override nor iOS long-press-callout/text-selection-magnifier
-  protection, matching the pattern logged for those two other repos. Fixed
-  pre-emptively (unverifiable as a visual artefact in this sandbox, same
-  `xcrun simctl` gap as every other instance of this lens)
-  ([`17216c8`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-baishi/commit/17216c8)).
-  The `forced-colors` border-loss variant came back correctly inapplicable —
-  `.zone-hit` gets its visible shape from a sibling SVG stroke, not a CSS
-  `background`/`box-shadow`, so there's nothing for forced-colors to strip.
-  A fresh read of `layout.ts`/`strokes.ts` found no new identity bug but did
-  name a real, correctly-out-of-scope design point: two visitors loading at
-  the same stroke count get the same `zoneStart`, so simultaneous drawing
-  would visually collide — exactly the concurrent-multi-visitor case
-  `README.md` already defers to crit 9. `pnpm audit` clean, one in-range
-  `vitest` patch applied
-  ([`bba04ae`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-baishi/commit/bba04ae)).
-  Both verified against the exact CI container, `pnpm check` green (6/6),
-  `PROCESS.md` extended to a seventh moment
-  ([`bbe824c`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-baishi/commit/bbe824c)),
-  redeployed and reverified live (`getComputedStyle` on the live page
-  confirms the new properties, console clean, both pages 200). Not the last
-  run — no reflection yet, correctly. No new self-administered angle is
-  currently flagged; a future run could try a fresh read of
-  `src/pages/readme.astro` (the `marked`-rendering path, not yet examined
-  with this lens) or re-check `pnpm audit`/`outdated` again later.
-  An eighth run, 2026-10-02, 111h-to-cutoff, worked that exact candidate
-  (a fresh read of `readme.astro`'s `marked`-rendering path) and found
-  nothing new, then tried `html-validate` against this repo for the first
-  time and found a confirmed tool limitation rather than a real bug — see
-  the dedicated `aria-label-misuse`/SVG-AAM `MEMORY.md` entry above for the
-  mechanism (the linter doesn't share its own implicit-role resolution
-  between its own rules, so no markup satisfies both `aria-label-misuse`
-  and `no-redundant-role` on this app's roleless `<svg>`). `pnpm audit`/
-  `outdated` unchanged, live deployment reconfirmed byte-for-byte against
-  `origin/main` on `/readme/`. `PROCESS.md` extended
-  ([`09283bf`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-baishi/commit/09283bf)).
-  No code change, no redeploy. Not the last run.
-  A ninth run, 2026-10-02, 105h-to-cutoff, worked that run's own flagged
-  candidate: a first-ever Lighthouse run against this repo, against the
-  exact CI container. Found a real issue — `best-practices` 0.96 on `/`
-  from a genuine console error on every load (no favicon existed at all,
-  matching the exact pattern already logged for crit-4/assignment-1/
-  crit-7's own first Lighthouse runs); `/readme/` also had no meta
-  description. Fixed with a small ink-blot SVG favicon in the app's own
-  light-mode palette, linked from both pages, plus the missing meta
-  description
-  ([`36f8174`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-baishi/commit/36f8174)).
-  Both pages now score 1.0 across all five Lighthouse categories,
-  confirmed by re-running against a rebuilt container; `pnpm check` green
-  (6/6) throughout. `PROCESS.md` extended
-  ([`1c0e06c`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-baishi/commit/1c0e06c)),
-  pushed, redeployed (`flyctl deploy --remote-only --ha=false`, 150MB
-  image), reverified live (favicon 200, console clean, both pages 200).
-  Not the last run — no reflection yet, correctly. No new
-  self-administered angle is currently flagged; a future run could try a
-  fresh read of `src/lib/db.ts` (the least-examined source file so far) or
-  re-check `pnpm audit`/`outdated` again later.
-  A tenth run, 2026-10-03, 94h-to-cutoff, tried that fresh-read candidate
-  on `db.ts` first and found nothing (validation is already fully enforced
-  at the API layer against the exported constants). Found a genuinely new
-  angle instead: every contrast fix this repo has ever shipped was
-  measured and verified in light mode only, even though `global.css` has
-  shipped a real `@media (prefers-color-scheme: dark)` block the whole
-  time — nobody had pointed `agent-browser set media dark` at either page.
-  Checked by hand (WCAG relative-luminance formula) and live against the
-  exact CI container: both dark-mode colours clear AA with real margin
-  (8.3:1, 7.4:1), a fresh axe-core sweep in dark mode matched the
-  light-mode result exactly (0 violations, the one known SVG-text
-  "incomplete"), console clean. No code change — a legitimate "checked,
-  confirmed correct" outcome, written up as a tenth `PROCESS.md` pass and
-  pushed (`45bcd34`); no redeploy, since nothing behaviour-changing
-  shipped. `pnpm audit`/`outdated` unchanged. Not the last run — no
-  reflection yet, correctly. No new self-administered angle is currently
-  flagged; a future run could re-check `pnpm audit`/`outdated` again after
-  enough time has passed, or try another fresh close read of
-  `src/lib/layout.ts`.
-  An eleventh run, 2026-10-03, 87h-to-cutoff, found and fixed the
-  overpainting breach (see the dedicated entry above): `3a57fdf` (fix +
-  spec), `06a7d0c` (README/CLAUDE.md), PROCESS.md eleventh pass; deployed,
-  verified live with refused-only requests so no test mark lands on the
-  public scroll. Not the last run.
-  A twelfth run, 2026-10-03, 81h-to-cutoff: the 409 stale-strip refusal's
-  UI copy contradicted README's promise and reopened a zone every retry of
-  which would fail; fixed (name the cause, keep the zone closed), verified
-  with two tabs, deployed. Running `pnpm check` against a local container
-  needs `-e PORT=8080` and `APP_URL=http://localhost:<port>`, as
-  `checks.yml` does — without `PORT` the app listens on 4321 inside.
-  A thirteenth run, 2026-10-04, 71h-to-cutoff, rewrote PROCESS.md to the
-  brief's band (see the parent-brief entry above) and trimmed README;
-  deployed. Not the last run.
-  A fourteenth run, 2026-10-04, 64h-to-cutoff: no change needed. A fix
-  for a `pnpm audit` finding published the same day wasn't picked up by
-  `pnpm update` — pnpm 11's minimum-release-age guard most likely holds
-  back very fresh releases. Retry after a day; don't override the guard.
-  Fifteenth (58h) and sixteenth (47h) runs confirmed it: still held.
-  Seventeenth (40h): guard cleared after ~25h, plain `pnpm update` took
-  the fix (`6311120`), audit clean, deployed. Waiting it out was right.
-  Crit 8 finished 2026-10-05 (34h): `reflections/crit-8.md` written
-  (breakthrough: README as spec, "never overpainted"), pushed, live URL
-  confirmed. The same repo continues into crit 9 ("All at once"). From
-  then on it's public and CI deploys every push, so every commit is
-  public too. Crit 9 owns the deferred concurrency, identity and
-  real-time decisions.
-  Crit 9 first run, 2026-10-07 (160h): decision recorded first as
-  `decisions/0001-two-marks-at-once.md`, then SSE live sync with SQLite
-  replay via `Last-Event-ID` and server-side placement by arrival.
-  Second run (154h): live stop/start reconnect verified; fixed the
-  stream's 20s late open and racing spec files. See `now.md`.
-  Third run (143h): the client dropped out-of-order marks (see the
-  high-water-mark entry); fixed `a1cc5f2`, deployed.
-  Fourth run (136h): mobile two-tab mid-drag test and README/decision
-  re-read both clean; no change.
-  Fifth run (130h): in-range dep patches (`ab9627c`); repo is public,
-  so the push deployed via CI (Fly release v20) — `flyctl releases`
-  confirms a CI deploy without `gh` auth.
-  Sixth run (119h): clean re-check, no change.
-  Seventh run (112h): stream died for good on a refused reconnect (see
-  the EventSource entry); fixed `632f838`, CI deploy v23 failed on Fly's
-  side, redeployed by hand (v24).
-  Eighth run (106h): fan-out with abrupt disconnects clean; comment
-  fix only.
-  Ninth run (95h): astro 7.3.8 patch (`7c044b4`); CI's docker build
-  then failed. Tenth run (88h): traced to the floating corepack pnpm and
-  better-sqlite3's implicit node-gyp build (see the binding.gyp entry);
-  fixed `66a7297`, CI green, deployed by CI (v29).
-  Eleventh run (82h): clean re-check, no change.
-  Twelfth run (71h): local stream latency 1–7 ms per mark; no change.
-  Thirteenth (64h) to sixteenth (40h) runs: clean
-  re-check, no change.
-  Crit 9 finished 2026-10-12 (34h): `reflections/crit-9.md` written
-  (breakthrough: the ADR's sentences as claims to break), pushed
-  `2c3161e`, CI check+deploy green, live confirmed. Crit 10 ("Fly by
-  instruments", logging/observability) continues in the same repo.
-  Crit 10 first run, 2026-10-14 (160h): identity as a browser cookie
-  (ADR 0002), `mine` decided per requester, seal on your own marks,
-  logfmt logs of who did what; CI-deployed v40. See `now.md`.
-  Second run (154h): live log narration rehearsed (all event kinds
-  labelled, lag only); seal survives reconnect replay. No change.
-  Third run (143h): off-strip refusal logs under the same visitor label
-  as its view; no change.
-  Fourth run (136h): in-range dep patches (`d47e0ba`), CI deploy v44.
-  Fifth run (130h): live two-client log check clean; no change.
-  Sixth run (119h): clean re-check, no change.
-
-- `comp4020-crit7-baishi` (Crit Roster, modelling this course's own weekly
-  crit-group scheduling) had its first build run on 2026-09-23,
-  167h-to-cutoff: went from the guestbook starter to a deployed, tested app
-  in six commits, all pushed to `origin/main` (`753eb6e`). Chose the system
-  by fetching the course website's own published `api/crit-groups.json`
-  (real six groups, real tutors, real week-9 Labour-Day reschedules) rather
-  than inventing data, per the three-layer doctrine at
-  `/home/ben/projects/comp4020/CLAUDE.md`. Schema replaces the starter's
-  single `messages` table with `crit_groups`/`weeks`/`exceptions`;
-  reschedule/cancel are plain form POSTs with server-side validation in the
-  data layer, live-synced across tabs via the starter's existing SSE bus.
-  `pnpm check` green (33/33 tests), `pnpm check:evidence` clean except the
-  expected not-yet-written reflection. Verified live with two genuine
-  `agent-browser` tabs (see the new `tab new` entry above) rather than just
-  the vitest SSE assertion — a reschedule in one tab drove a real navigation
-  in the other. First-ever deploy for this repo:
-  `flyctl deploy --remote-only --ha=false -a comp4020-crit7-baishi`
-  succeeded; live URL confirmed via `curl` (200) and `agent-browser`
-  (console clean, screenshot shows correct real seed data). Not the last
-  run — no reflection yet, correctly.
-  A second run, 2026-09-23, ~154h-to-cutoff, worked that exact untried-angles
-  list. `pnpm audit` found 19 vulnerabilities; a plain in-range `pnpm update`
-  cleared 18 (one `esbuild`-via-`drizzle-kit` dev-server advisory left,
-  correctly, since this app never exposes esbuild's own server). A fresh
-  `html-validate` pass found and fixed 2 buttons/2 inputs missing an
-  explicit `type`. The keyboard tab-order walk and a live axe-core sweep
-  both came back clean. The 200%-zoom check found what looked like a real
-  overflow but traced to a `style.zoom` measurement artifact — see the new
-  dedicated entry above (`documentElement.scrollWidth` vs `body.scrollWidth`).
-  The headline finding: simulating a Fly.io auto-stop/wake cycle live (see
-  the new dedicated `MEMORY.md` entry above) confirmed the browser's
-  `EventSource` reconnects correctly but any event broadcast during the
-  outage is lost, since the bus keeps no backlog — fixed by reloading on
-  every reconnect after the first, with the decision extracted into
-  `src/lib/live-reload.ts` so `spec/crit-7.test.ts` could assert it
-  directly per this repo's own test-coverage rule. 5 commits, all pushed
-  (`7e7a575`), `pnpm check` green (35/35 tests), redeployed and reverified
-  live. Not the last run — no reflection yet, correctly. See its `now.md`
-  for what's left: a first-ever Lighthouse run, the brief-clause-re-derivation
-  technique (not yet tried on this repo at all), and a
-  CSS-property-literacy pass (low-priority — this app has almost no custom
-  styling).
-  A third run, 2026-09-23, ~154h-to-cutoff, worked that exact list. Re-fetched
-  the published `api/crit-groups.json` and confirmed the seeded schema still
-  matches verbatim (no drift). A fresh read of every page (rather than a
-  fourth pass of the same sensors) found a real stale-copy bug: the readme
-  page's own nav still said "Guestbook," left over from the starter template
-  and never updated when the app's model became a crit roster — see the new
-  dedicated `MEMORY.md` entry above for the generalised lesson. Fixed
-  (`fc4de33`). A first-ever Lighthouse run against the built server (needed
-  running `node dist/server/entry.mjs` directly rather than `astro preview`,
-  since this app's build output is `"server"` mode, not static) scored
-  `best-practices` 0.96 and `seo` 0.9 for the same favicon-404
-  console-error/missing-meta-description pattern logged for every other
-  deliverable's first Lighthouse run — fixed with a small SVG favicon and a
-  one-line meta description on both pages, confirmed back to 1.0 across all
-  five categories on re-run (`9e5d566`). Also re-ran `pnpm audit` (unchanged,
-  same one correctly-left esbuild advisory), a fresh axe-core sweep on both
-  pages (0 violations), and `html-validate` against the live-rendered HTML
-  (clean) — no new findings there. `pnpm check` green (35/35 tests), 3
-  commits pushed (`7713f90`), redeployed and reverified live (console clean,
-  nav and favicon correct on `https://comp4020-crit7-baishi.fly.dev/`). Not
-  the last run — no reflection yet, correctly. See its `now.md` for what's
-  left: the brief-clause-re-derivation technique still hasn't actually been
-  tried against this repo's own prose/copy beyond the one nav-label read,
-  and the CSS-property-literacy pass remains untried (still low-priority —
-  this app has no custom-styled interactive elements to lose their shape
-  under `forced-colors`, only native form controls).
-  A fourth run, 2026-09-24, 143h-to-cutoff, ran the brief-clause-re-derivation
-  technique against this repo's own `CLAUDE.md` (not the course source this
-  time) and found a real coverage gap: "one exception per group per week" is
-  implemented correctly (delete-then-insert against the schema's unique
-  constraint) and documented in `README.md` as a deliberate "replace, not
-  stack" decision, but had never had a test of its own — fixed with a new
-  `spec/crit-7.test.ts` block (`d81472c`). `pnpm audit` clean; `pnpm
-  outdated` had one genuine in-range patch (`astro` 7.3.3 → 7.3.4), applied
-  via `pnpm update` (`0707cf7`). Also found and worked around a new
-  `agent-browser` tooling limitation (`type="time"` inputs don't respond to
-  `fill`/`type`, see the new dedicated `MEMORY.md` entry above) and used the
-  workaround to drive the first-ever genuine DOM form submission and button
-  click against this app's write path (also newly logged above). Along the
-  way, found the local `.data/*.db*` scratch database had gone stale from
-  prior manual testing (missing a seeded exception) and was masking correct
-  behaviour during a live check — deleted and regenerated fresh (gitignored
-  local dev state, unrelated to the deployed Fly volume). `PROCESS.md`
-  updated, `pnpm check` green (36/36 tests) throughout, all 3 commits pushed
-  (`9d08e28`), redeployed and reverified live (200, correct seed data,
-  console clean). Not the last run — no reflection yet, correctly. See its
-  `now.md` for what's left: the CSS-property-literacy pass remains untried
-  (still correctly judged low-priority), and the human-timed session still
-  needs the studio crit itself.
-  A fifth run, 2026-09-24, ~136h-to-cutoff, worked that exact list: a live
-  keyboard tab-order walk came back clean, and a real 200%-zoom reflow
-  check at the mobile marking viewport found a genuine, previously-invisible
-  reflow bug in the reschedule form — see the new dedicated `fieldset`/
-  `inline`-form entry above for the three stacked CSS causes and the fix.
-  Fixed and pushed (`6996965`/`5cc110b`), re-verified clean at both marking
-  viewports (zoomed and not), a fresh axe-core sweep (0 violations), and the
-  full `pnpm check` suite (36/36). Redeployed and reverified live (200,
-  console clean, correct content). Not the last run — no reflection yet,
-  correctly. Every self-administered technical/content angle this agent has
-  a technique for has now been run at least once against this repo; the
-  human-timed studio-crit session is the only standing open thread left.
-  A sixth run, 2026-09-24, ~130h-to-cutoff, rather than forcing a low-yield
-  pass on that empty list tried a genuinely new interaction instead: drove
-  two real `agent-browser` tabs through the "more than one tutor has this
-  open" scenario `README.md` itself names as the reason live sync exists,
-  and found a real data-loss bug — see the new dedicated dirty-tracker
-  entry above for the mechanism, the fix, and the `type="time"` false-negative
-  trap hit along the way. Fixed with a `createDirtyTracker` gate on every
-  reload call site in `src/lib/live-reload.ts`/`src/pages/index.astro`,
-  confirmed no regression (a clean tab still reloads normally), added
-  `spec/crit-7.test.ts` coverage (38/38 green), cited in `PROCESS.md` and
-  `README.md`. Fixed and pushed (`e3a4a3d`/`e403687`), redeployed and
-  reverified live (200, console clean, form and notice element present and
-  correctly hidden by default). Not the last run — no reflection yet,
-  correctly. No new self-administered angle is currently flagged; the
-  human-timed studio-crit session remains the only standing open thread.
-  A seventh run, 2026-09-25, ~119h-to-cutoff, worked that run's own single
-  flagged candidate (does the dirty flag itself ever need clearing) and
-  found a real one-way-ratchet bug — see the new dedicated `markClean` entry
-  above for the mechanism and fix, and the extended trap entry for how the
-  same `type="time"`-reset trap bit twice re-verifying it. Fixed and pushed
-  (`38a7d0d`/`41e0e03`), `spec/crit-7.test.ts` coverage added (38 → 39
-  tests, green), `PROCESS.md` now at 7 cited moments, redeployed and
-  reverified live (200, console clean, fresh axe-core sweep 0 violations).
-  Not the last run — no reflection yet, correctly. No new self-administered
-  angle is currently flagged; the human-timed studio-crit session remains
-  the only standing open thread.
-  An eighth run, 2026-09-25, ~112h-to-cutoff, re-read `src/pages/api/
-  exceptions.ts`/`src/lib/db.ts` fresh and tried an angle none of the prior
-  seven had: hitting `POST /api/exceptions` and the cancel route directly
-  with `curl`, bypassing the honest select/option-populated form entirely, to
-  check `CLAUDE.md`'s "validate server-side, in the data layer" rule at a
-  boundary the form itself can never exercise (missing/non-numeric fields,
-  out-of-range ids). Came back clean — every case resolved to a graceful
-  `ValidationError` redirect, and Astro's own `security.allowedDomains`
-  same-origin check rejected an unauthenticated cross-origin POST with a 403
-  before the handler ran. Also confirmed the echoed `?error=` query param is
-  properly entity-escaped (no reflected-XSS gap). No code change, cited as
-  the 8th `PROCESS.md` moment (`fd1332e`). Not the last run.
-  A ninth run, 2026-09-25, ~106h-to-cutoff, followed up on the seventh's own
-  `markClean` fix rather than starting a new sensor pass, and found the fix
-  was only half-complete — see the new dedicated `MEMORY.md` entry above
-  (the "gate reopening only permits the *next* attempt, doesn't resolve the
-  one already deferred" lesson) for the mechanism. Confirmed live with two
-  tabs: a message that arrived while dirty (notice shown, draft and a
-  `window.__marker` both correctly untouched) was never retried once the
-  draft was cleared back to pristine — the marker stayed put, proving no
-  reload fired. Fixed with `notePendingReload`/`claimPendingReload` in
-  `src/lib/live-reload.ts`, wired into `index.astro`'s `input` handler right
-  after `markClean`
-  ([`8212382`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit7-baishi/commit/8212382)),
-  `spec/crit-7.test.ts` coverage added (39 → 41 tests, green), `PROCESS.md`
-  now at 9 cited moments
-  ([`5476344`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit7-baishi/commit/5476344)).
-  Re-verified the same two-tab scenario live post-fix (clearing the draft now
-  genuinely navigates — marker gone, roster shows the other tab's change),
-  fresh axe-core sweep 0 violations, redeployed and reverified live (200,
-  console clean, correct seed data). Not the last run — no reflection yet,
-  correctly. No new self-administered angle is currently flagged; the
-  human-timed studio-crit session remains the only standing open thread.
-  A tenth run, 2026-09-26, ~95h-to-cutoff, closed the ninth run's own flagged
-  follow-up (does `createReconnectGate`'s plain boolean flip have a
-  comparable resolved-vs-merely-possible gap to the dirty tracker's) and
-  confirmed it doesn't — the gate has no notice-then-defer step of its own,
-  it funnels straight into `reloadUnlessDirty`, which already owns that
-  bookkeeping. Found one real small gap instead: `sessionDate`, the pure
-  function `CLAUDE.md`'s own "derive, don't duplicate" rule names, had never
-  been asserted directly — only eyeballed via screenshots across nine prior
-  runs. Added direct coverage including a real seeded week (8) whose Friday
-  session crosses a month boundary (`e022569`). Re-fetched
-  `api/crit-groups.json` (no drift), `pnpm audit` clean (same one correctly-
-  left esbuild advisory), one in-range `astro` patch applied (`a9e6bef`), and
-  a fresh `html-validate` pass against the live-rendered home/readme pages
-  came back fully clean (after fixing a wrong route guess — `/about` isn't a
-  real page here, `/readme` is; Astro's own 404 page was what had been
-  validated the first time). `pnpm check` green (44/44 tests), `PROCESS.md`
-  now at 10 cited moments, redeployed and reverified live (200, console
-  clean). Not the last run — no reflection yet, correctly. No new
-  self-administered angle is currently flagged; the human-timed studio-crit
-  session remains the only standing open thread. One untried angle noted for
-  a future run: `README.md` hasn't had the clause-by-clause re-derivation
-  treatment `CLAUDE.md` already got in the fourth run, only spot-checks.
-  An eleventh run, 2026-09-26, ~88h-to-cutoff, closed that exact gap and it
-  paid off immediately: `README.md`'s opening paragraph claimed the week-9
-  exception belonged to "this run's own group, Baishi," but the seed code
-  correctly attaches both real week-9 exceptions to Shitao and Bada — see
-  the new dedicated `MEMORY.md` entry above (prose-vs-data drift a
-  data-only re-fetch check can't catch) for the general lesson. Fixed
-  (`0b10fd9`), confirmed live via `agent-browser` that the roster's first
-  two rendered headings are genuinely Shitao/Bada, console clean. Every
-  other README clause checked out against current code. Cited in
-  `PROCESS.md` as an 11th moment (`8f9ea5c`). `pnpm check` green (44/44
-  tests), docs-only change so deliberately not redeployed. Not the last
-  run — no reflection yet, correctly.
-  A twelfth run, 2026-09-26, ~82h-to-cutoff, applied that exact flagged
-  treatment to `PROCESS.md` itself for the first time — every cited commit
-  hash resolved and every specific claim (the three named validation test
-  cases, the replace-not-stack test, the `sessionDate` month-boundary test,
-  the favicon/meta-description fix on both pages, explicit `<button>`/
-  `<input>` types, the three-cause zoom-reflow CSS fix, the `astro` version
-  bump) checked out against the current repo with nothing to fix. Re-ran
-  the cheap sensors (`pnpm audit`/`outdated` unchanged) and a fresh
-  live-browser pass against a rebuilt server (console clean, 0 axe
-  violations on both routes). No code change, no commit — a legitimate
-  "checked, confirmed correct" outcome; eleven runs of real fixes on this
-  repo makes a clean run the expected steady state now, not evidence of a
-  missed check. `spec/README.md`/`fly.toml` are course-managed/starter
-  boilerplate this repo isn't meant to deviate from, so little is left to
-  check there beyond what this run already read. The human-timed
-  studio-crit session remains the only standing structural open thread.
-  A thirteenth run, 2026-09-27, ~71h-to-cutoff, worked that run's own
-  flagged candidate (re-verify the deployed Fly URL matches `origin/main`)
-  and it paid off: the live app was stale, still serving the eleventh
-  run's now-fixed README error, because that run had judged the fix
-  "docs-only, no redeploy needed" without checking that `readme.astro`
-  compiles `README.md` at build time — see the new dedicated `MEMORY.md`
-  entry above for the general lesson. No code change (the fix already
-  existed in git); rebuilt, confirmed the corrected text locally, then
-  `flyctl deploy`. Live `/` and `/readme/` both 200, console clean,
-  `/readme/` now reads correctly. No commit this run. Not the last run.
-  Next candidate for a future run: grep the repo for any other build-time
-  `import` of a markdown/content file, in case the same "is this really
-  deploy-inert" question applies elsewhere; otherwise the human-timed
-  studio-crit session remains the only standing open thread.
-  A fourteenth run, 2026-09-27, ~64h-to-cutoff, closed that exact candidate:
-  `readme.astro`'s `README.md` import is the only build-time markdown
-  import in the repo, confirmed by grep. Re-verified the live Fly URL
-  directly against `origin/main` HEAD (not just trusting the prior run's
-  redeploy) — still correct. Re-ran the full check suite (44/44 tests),
-  `pnpm audit`/`outdated` (unchanged), a fresh live axe-core sweep on both
-  deployed pages (0 violations), and confirmed the CSS-property-literacy
-  pass remains correctly inapplicable (no custom-styled interactive
-  elements in either `.astro` page). No code change, no commit — everything
-  checked out clean. Not the last run. No new self-administered angle is
-  currently flagged; the human-timed studio-crit session remains the only
-  standing open thread.
-  A fifteenth run, 2026-09-27, ~58h-to-cutoff, re-verified the same standing
-  candidate (deployed Fly URL vs `origin/main` HEAD) again — no drift this
-  time, unlike the thirteenth run. Re-ran `pnpm check` (44/44 green),
-  `pnpm audit`/`outdated` (unchanged), and a live `agent-browser` pass
-  against the deployed home page (console clean). No code change, no
-  commit. Not the last run. No new self-administered angle is currently
-  flagged; the human-timed studio-crit session remains the only standing
-  open thread.
-  A sixteenth run, 2026-09-28, ~47h-to-cutoff, re-confirmed the same clean
-  state again (no drift, `pnpm check`/`audit`/`outdated` unchanged, live URL
-  correct) and additionally checked this week's brief for a new warning box
-  about updating the `comp4020` course plugin — correctly judged
-  inapplicable, since this session has no such plugin installed and updating
-  one wouldn't be this agent's call regardless (matches the standing
-  harness-owned-shipping boundary). No code change, no commit. Not the last
-  run.
-  A seventeenth run, 2026-09-28, ~40h-to-cutoff, re-ran the same standing
-  checks (all clean, no drift) plus read `pnpm check:evidence`'s script
-  output against its own known shared-`failed`-flag quirk to positively
-  confirm every `PROCESS.md` citation still resolves, not just infer it from
-  a single visible failure line. Re-read `index.astro`/`live-reload.ts`
-  fresh for an untried edge case in the dirty-tracker/reconnect-gate
-  machinery (this repo's most bug-prone area historically) — found nothing
-  new; `pendingReload`'s plain-boolean idempotency already covers multiple
-  missed messages. No code change, no commit. Not the last run. Four
-  consecutive clean runs (14–17) is the expected steady state for a repo
-  this thoroughly worked, not evidence of a missed check — the human-timed
-  studio-crit session remains the only standing open thread.
-  An eighteenth and final run, 2026-09-28, ~34h-to-cutoff, ran the doctrine's
-  finishing steps: a fresh live-browser pass at both marking viewports
-  (console clean, nav labels correct, Shitao still the first rendered group
-  — the eleventh run's README fix still holding), `pnpm check` green (44/44
-  tests). `PROCESS.md` was already a complete 11-moment account from
-  seventeen prior runs, so nothing more was added to it. Wrote
-  `reflections/crit-7.md` (282 words, both standing prompts, naming the
-  clause-by-clause re-derivation technique as the breakthrough — it's what
-  kept finding real bugs, most recently the README prose-vs-data error in
-  the eleventh run, long after the sensor battery first read as exhausted
-  around run 5). `pnpm check:evidence` fully clean (reflection found, all 19
-  cited commits resolve). Committed and pushed (`d88eb7a`); no redeploy
-  needed since `reflections/` is deliberately excluded from the built site
-  (unlike `README.md`, nothing imports it), confirmed by re-checking the
-  live Fly URL directly (both `/` and `/readme/` 200, correct content). This
-  deliverable is now **fully shipped** — this was the last run for
-  `comp4020-crit7-baishi`. Across all eighteen runs, the standout general
-  lesson (beyond the many individual entries already logged above) is that
-  the clause-by-clause re-derivation technique — checking a project's own
-  prose (`CLAUDE.md`, `README.md`, code comments) against live behaviour,
-  not just running sensors against code — kept surfacing real defects for
-  thirteen further runs after the automated battery (axe-core,
-  html-validate, Lighthouse, keyboard walks) first read as exhausted. The
-  only thing left unresolved is the human-timed studio-crit session, which
-  needs the studio itself, not a future run of this agent.
-
-- `comp4020-crit5-baishi` (Two-Tone, a colour-match falling-circle dodge
-  game) had its first build run on 2026-08-26, 167h-to-cutoff: went from the
-  bare template straight to a playable, testable game in five commits
-  (rule+test, initial build, a play-found swap-button fix, the card
-  replacement, `PROCESS.md`), all pushed to `origin/main`
-  (`7da8559`). `pnpm check` green (21 tests), a fresh axe-core sweep clean,
-  `html-validate` clean except the expected doctype/void-style non-issues,
-  and both marking viewports played through live against `pnpm preview`
-  with a clean console. Deliberately used the harder "two mechanics that
-  interact" shape the brief calls out (movement + colour-toggle) rather
-  than a single-mechanic dodge. A second run the same day, 160h-to-cutoff,
-  closed every angle that run's `now.md` had flagged and found two real
-  bugs: the launch teal/pink hue pair collapsed to near-identical greys
-  under deuteranopia (see the CVD-simulation-matrix entry below) — fixed
-  to sky blue/amber, and re-applied to `public/card.png` too, which still
-  showed the old palette after the in-game fix (`5d63433`) — and a missing
-  `-webkit-tap-highlight-color` on the full-bleed canvas, the same class of
-  finding as crit-4's `.pad` (`8b9e859`). A scripted reactive-bot playtest
-  of the difficulty ramp (see below) came back clean, and the
-  screen-reader-scope question was explicitly decided (not left
-  unconsidered) and written into `PROCESS.md`, now at 7 cited moments. Not
-  the last run — no reflection yet, correctly. See its `now.md` for what's
-  still untried: Lighthouse (never run on this repo), a real human-timed
-  five-minute play session (the scripted bot stands in for reflexes, not
-  judgement of fairness), and a live keyboard tab-order walk.
-  A third run, 2026-08-26, 154h-to-cutoff, worked that exact list: html-validate
-  re-run came back clean (same expected non-issues); the keyboard tab-order
-  walk came back clean (nav link → canvas, both with the default visible
-  outline, keyboard controls wired on `window` so they work without ever
-  tabbing to the canvas); and a real by-eye playtest (screenshots through a
-  full round, not the scripted bot) confirmed the two hues, the swap
-  button's dashed to-colour hint, and the game-over/restart cycle all read
-  clearly — no new design bug, a legitimate "checked, confirmed correct"
-  outcome since the spec's "found by playing" requirement was already
-  satisfied on the first build run. Lighthouse, run for the first time,
-  *did* find something: the same favicon.ico-404 console-error pattern
-  crit-4 had already caught, `best-practices` 0.96 → fixed with an SVG
-  favicon in the game's own palette, confirmed back to 1.0 on re-run. That
-  same pass also caught a second, unrelated gap the palette swap had left
-  behind: `styles.css`'s nav-link colour was never updated in the hue swap
-  (only `main.ts` was touched), so the page chrome still carried the
-  retired pink after the in-game colours moved to sky blue/amber — moved to
-  the settled amber. [`48e382b`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-baishi/commit/48e382b).
-  `PROCESS.md` now at 8 cited moments, all commits pushed (`21c4d97`). Not
-  the last run. See its `now.md` for what's left: a real human-judged
-  five-minute session (can't be self-administered, an open thread for the
-  studio crit itself), `pnpm audit`/`outdated`, a 200%-zoom reflow check,
-  and a copy-vs-behaviour prose pass.
-  A fourth run, 2026-08-27, 143h-to-cutoff, worked that exact list.
-  `pnpm audit` found 7 real vulnerabilities in transitive dev-tooling deps;
-  a plain in-range `pnpm update` (`vite`→8.2.2, `vitest`→4.1.11) cleared
-  all of them, `pnpm check` staying green (`ae3fa91`). The 200%-zoom check
-  found a canvas-squash effect but traced it to a testing-technique
-  artifact rather than a real bug — see the new dedicated entry above
-  (`style.zoom` doesn't fire `resize`/change `innerWidth`, so it can't
-  faithfully stand in for either real desktop zoom or real mobile
-  pinch-zoom on this canvas-driven layout) — no code change. The
-  copy-vs-behaviour prose pass checked the meta description against
-  `isFatalCollision` directly and found it accurate; nothing to fix.
-  `PROCESS.md` now at 9 cited moments, pushed (`f1881aa`). Not the last
-  run. See its `now.md` for what's left: the human-timed five-minute
-  session (still open, still not self-administerable), a real
-  pointer-drag test of drag-to-move specifically (only keyboard movement
-  and the swap button's click have had genuine non-keyboard input so
-  far), and a live `prefers-reduced-motion` check of the swap button's
-  pulse animation (the branch exists in `draw()` but has never been
-  observed live via `agent-browser set media reduced-motion`).
-  A fifth run, 2026-08-27, 136h-to-cutoff, worked that exact list and both
-  checks came back "checked, confirmed correct" — no code change, no
-  commit. The pointer-drag test used a temporary `window.__debug` getter
-  (reverted before finishing, matching the pattern already logged
-  elsewhere in this file) to read `player.x`/`dragging`/`state` live:
-  a genuine `agent-browser mouse down` + `mouse move` + `mouse up` drag
-  tracked `player.x` to the exact dragged-to position at each step
-  (110 → 510 in canvas-local px) and left it there (no snap-back) on
-  release, confirming the pointer path works independently of the
-  keyboard path already checked. The reduced-motion check sampled a single
-  canvas pixel at the swap button's pulse-boundary radius
-  (`ctx.getImageData`) repeatedly over ~1.5s: with the OS preference off,
-  the sampled colour genuinely flickered between the dashed-stroke colour
-  and the background as the pulse animated; after `agent-browser set media
-  reduced-motion` + a fresh page load, the same sample stayed pinned to
-  the background colour for the same span — confirming the `pulse =
-  prefersReducedMotion ? 0 : ...` branch is actually inert under the
-  preference, not just present in source. Also re-ran `pnpm audit` (still
-  clean) and `pnpm outdated` (same four major-only entries, correctly left
-  alone) as a quick re-check, no drift since the fourth run. No commits
-  this run — nothing needed one. This is now the last self-administerable
-  angle on the fourth run's flagged list; the studio-crit five-minute
-  session remains the only open thread. Not the last run — no reflection
-  yet, correctly.
-  A sixth run, 2026-08-27, 130h-to-cutoff, re-read `main.ts`/`game-logic.ts`/
-  `styles.css` fresh (per the prior run's own advice to prefer a fresh read
-  over a fourth repeat of the exhausted battery) and tried one genuinely
-  untried angle: a real window resize mid-round via
-  `agent-browser set viewport`, distinct from the `style.zoom` reflow check
-  a prior run had already found to be a testing-artifact false lead for this
-  canvas. Found a real (low-impact) gap — `resize()` reclamps the player's x
-  but never obstacles' — then found the obvious fix was worse than the bug
-  and reverted it; see the new dedicated entry below for the full reasoning.
-  No commits this run — the investigation itself, and the decision not to
-  ship the fix, is the legitimate outcome. `pnpm check` still green (21
-  tests), working tree clean, nothing new pushed. Not the last run. The
-  human-timed five-minute session remains the only standing open thread; no
-  new self-administerable angle is currently flagged.
-  A seventh run, 2026-08-28, 119h-to-cutoff, re-read `main.ts` fresh again
-  and applied a technique already logged for a *different* repo (Drift,
-  crit-4's blur-vs-visibilitychange lesson, below) to this one for the
-  first time — see the new cross-repo entry below for the general lesson.
-  Found a real bug: the existing `blur` handler that clears held
-  arrow-keys/drag state only covers the window losing OS focus, not a
-  same-window tab switch (confirmed via web search: that hides the
-  document, firing `visibilitychange`, without ever blurring the window —
-  arguably the *more* common real path a player hits than an actual
-  window blur). Reproduced live with a temporary `window.__debug` hook
-  and a synthetic `document.hidden = true` + `visibilitychange` dispatch:
-  a held arrow key stayed stuck under the old code, cleared once
-  `visibilitychange` got the same `releaseHeldInput()` call as `blur`.
-  Fixed and pushed (`25d1bc3`/`b386c26`), `pnpm check` still green (21
-  tests), both marking viewports console-clean afterwards. Not the last
-  run. The human-timed five-minute session remains the only standing open
-  thread.
-  An eighth run, 2026-08-28, 112h-to-cutoff, re-read the code fresh again
-  and found a second real bug this same way: the `keydown` handler's
-  `gameover` branch calls `resetGame()` and returns before the function
-  reaches its own `event.preventDefault()` calls, so Space (the browser's
-  default page-scroll-down key) still scrolls the page underneath a
-  restart. Invisible at both marking viewports — the page's total height
-  never exceeds either one — but real at shorter effective heights a
-  phone's on-screen address bar produces, since the canvas is sized
-  `min(70vh, 32rem)` and shrinks with actual viewport height (see the new
-  `preventDefault`-ordering entry below for the general lesson and how it
-  was confirmed live). Fixed and pushed (`b3b2b60`/`60317da`), `pnpm
-  check` still green (21 tests). Not the last run. The human-timed
-  five-minute session remains the only standing open thread.
-  A ninth run, 2026-08-28, 106h-to-cutoff, re-read `main.ts` fresh a third
-  time and found a third real bug in the same small area (focus/input
-  handling around state transitions): the `gameover` branch's `keydown`
-  handler restarted on *any* keydown, with no check for the browser's own
-  key auto-repeat (`event.repeat`) — so a movement key still physically
-  held at the moment of a fatal collision (the likely case, since dying
-  usually happens mid-dodge) kept sending repeat keydowns that silently
-  reset the round before the player ever saw the game-over screen, with
-  no intentional keypress involved. See the new dedicated entry below for
-  the mechanism and how it was confirmed live. Fixed and pushed
-  (`f43833d`/`beadbe8`), `pnpm check` still green (21 tests), both
-  marking viewports console-clean afterwards. Not the last run. The
-  human-timed five-minute session remains the only standing open thread —
-  three consecutive runs finding real bugs in the same corner of the file
-  suggests that area specifically rewards another close read before a
-  future run trusts it's exhausted.
-  A tenth run, 2026-08-29, 95h-to-cutoff, re-read `main.ts` fresh a fourth
-  time and found a fourth real bug in the exact same handler: the
-  Space-to-swap-hue branch had the mirror-image gap of the ninth run's fix
-  — it toggled the player's hue on *every* keydown, including auto-repeat,
-  rather than once per fresh press, so holding Space past the OS repeat
-  threshold flickered the hue uncontrollably (see the extended entry
-  above for the mechanism and generalised lesson). Fixed with the
-  identical `event.repeat` guard, verified the pointer/click path to the
-  same swap control was unaffected, and pushed (`1129a02`/`3afc118`).
-  `pnpm check` still green (21 tests), both marking viewports
-  console-clean. Not the last run. The human-timed five-minute session
-  remains the only standing open thread — four consecutive runs now
-  finding real bugs in this same `keydown` handler; a future run should
-  give it one more close read (specifically checking whether the
-  movement-key branches, which only add/delete into a Set and are
-  naturally idempotent under repeat, are actually as harmless as they
-  look) before concluding the handler itself is finally exhausted.
-  An eleventh run, 2026-08-29, 88h-to-cutoff, confirmed that specific
-  check (movement-key repeat is genuinely harmless — `pressed.add`/`delete`
-  is idempotent, verified by reading rather than needing a live test) and
-  then found a fifth real bug, this time in a cross-handler interaction
-  rather than the `keydown` handler alone: `pointermove`'s drag branch only
-  checked its own `dragging` flag, and nothing cleared that flag when
-  `gameOver()` fired mid-drag — there's no `pointerup` to catch it, since
-  the player's finger/mouse never lifted. Confirmed live with a temporary
-  `window.__debug` hook: forced a collision while a real `agent-browser`
-  drag was still held down, then kept moving the pointer, and watched
-  `playerX` keep tracking it (310 → 460 → 610) while `state` stayed
-  `"gameover"` — the player circle visibly slid under the dimmed overlay
-  after the round had supposedly ended. Fixed the same way the existing
-  blur/visibilitychange handler already clears held input: `gameOver()`
-  now sets `dragging = false` itself, so `pointermove`'s existing guard
-  takes over with no change needed there. See the new cross-handler-state
-  entry below for the generalised lesson. Fixed and pushed
-  (`60ac9eb`/`dc9c11a`), `pnpm check` still green (21 tests), both marking
-  viewports console-clean. Not the last run. The human-timed five-minute
-  session remains the only standing open thread.
-  A twelfth run, 2026-08-29, 82h-to-cutoff, re-ran the cheap `pnpm audit`/
-  `outdated` pair (still clean, still the same four major-only entries) and
-  then found a sixth real bug via a third distinct technique — not a fresh
-  code read and not brief-clause re-derivation, but re-reading an
-  *already-shipped fix's own reasoning* and asking whether it generalised
-  as far as it should have (see the new dedicated entry below). The
-  eighth run's Space-scroll fix (`b3b2b60`) was scoped to Space
-  specifically; ArrowUp/ArrowDown, which have no in-game effect anywhere
-  in `main.ts`, had never had `preventDefault()` called on them in any
-  state. Confirmed live at a real short viewport (390×500, genuine
-  overflow) that ArrowDown scrolled the page 29px during ordinary play,
-  no collision or restart involved. Fixed by widening the same
-  unconditional check to cover both arrow keys; verified movement and
-  Space's toggle still fire normally. Fixed and pushed
-  (`79b43cc`/`4b7577d`), `pnpm check` still green (21 tests), both marking
-  viewports console-clean. Not the last run. The human-timed five-minute
-  session remains the only standing open thread.
-  A thirteenth run, 2026-08-29, 71h-to-cutoff, reapplied the twelfth run's
-  own flagged next action (re-check whether the just-shipped fix
-  generalised as far as it should have) to itself, one level deeper: the
-  Space→ArrowUp/ArrowDown fix still only covered the two arrow keys that
-  motivated it, not the full "browser scroll key with no in-game use"
-  class — Home, End, PageUp and PageDown are the same class and had never
-  had `preventDefault()` called on them either. Confirmed live at the same
-  short viewport (390×500) with the canvas genuinely focused: each of the
-  four moved `window.scrollY` during ordinary play (End 0→25, PageDown
-  0→27, Home 30→4, PageUp 30→7 — the latter two tested from a
-  pre-scrolled position since scrollY was already 0 going up). Fixed by
-  widening the same unconditional check to all eight keys, verified
-  movement/Space-toggle unaffected and console clean. Fixed and pushed
-  (`212b0b5`/`ab34cbf`), `pnpm check` still green (21 tests). This is now
-  the complete set of standard browser-default scroll keys — a future run
-  shouldn't expect a fifth instance of this exact class in this repo, though
-  the general "does a fix generalise as far as its own stated reasoning
-  implies" technique is still worth trying on other already-shipped fixes
-  in this handler. Not the last run. The human-timed five-minute session
-  remains the only standing open thread.
-  A fourteenth run, 2026-08-30, 64h-to-cutoff, tried that same technique
-  against a handler other than the scroll-key vein (the run's own flagged
-  candidates: the swap-button hit-test, the gameover-restart branch, the
-  drag-clamp logic) and found a real bug in the third: `dragging` was a
-  single shared boolean, correct for a mouse but wrong for touch — an
-  incidental second touch releasing off the canvas cleared the same flag
-  regardless of which pointer it belonged to, silently stopping the first
-  pointer's still-held drag from tracking further movement. See the new
-  dedicated entry below for the mechanism, the fix (`draggingPointerId`
-  keyed by `event.pointerId`), and a testing-artifact caveat found along
-  the way (`setPointerCapture` throws for a second synthetic pointerId
-  while a first already holds capture — real hardware wouldn't hit this,
-  but the underlying flag bug was confirmed independently of it). Fixed
-  and pushed (`24abb55`/`b3d0d8e`), `pnpm check` still green (21 tests),
-  both marking viewports console-clean, a chord tap on the swap button
-  mid-drag by a second pointer verified unaffected. Not the last run. The
-  human-timed five-minute session remains the only standing open thread —
-  two untried candidates left from this run's own list: the
-  gameover-restart-on-any-`pointerdown` branch, and whether
-  `withinSwapButton`'s fixed-pixel hit radius holds at viewport extremes.
-  A fifteenth run, 2026-08-30, 58h-to-cutoff, worked both candidates and
-  closed each with no code change — see the new dedicated entry below for
-  the restart one's mechanism and the reasoning for why it's not actually
-  a distinct bug. The hit-test candidate reasoned out clean too: a fixed
-  32px touch target is standard accessible practice regardless of
-  viewport size, and all game coordinates already live consistently in
-  CSS-pixel space with no DPR mismatch. Also cross-checked this repo's
-  `styles.css` against three CSS-property-literacy lessons logged for
-  crit-4 that had never explicitly been checked here —
-  `-webkit-tap-highlight-color` (already fixed, `8b9e859`), `touch-action`
-  scope (already correctly scoped to `#game`, never made crit-4's
-  body-wide mistake), and `forced-colors: active` border-loss (doesn't
-  apply — this repo's interactive surface is canvas-drawn pixels, not a
-  DOM button styled via background/box-shadow) — all three clean. `pnpm
-  check` still green (21 tests), no commits this run. Not the last run.
-  The human-timed five-minute session remains the only standing open
-  thread; no new self-administered angle is currently flagged.
-  A sixteenth run, 2026-08-31, 47h-to-cutoff, re-read `main.ts`/
-  `game-logic.ts`/`index.html` fresh and traced several more restart/drag
-  edge cases (tap-to-restart not also grabbing a drag for the same
-  pointer, multiple simultaneous fatal collisions in one frame,
-  window-level keydown/keyup being unaffected by in-page Tab-focus moves)
-  — each reasoned out as intentional or harmless, no new bug. Ran the
-  cheap `pnpm audit`/`outdated` pair (still clean, same four expected
-  major-only entries) and, for the first time in two runs, a real live
-  browser pass (`pnpm preview` + `agent-browser` at both marking
-  viewports): console clean at both, a fresh axe-core sweep at 0
-  violations, a mobile screenshot confirming the sky-blue/amber pair and
-  swap button still render correctly. No commits — nothing needed one.
-  Not the last run. The human-timed five-minute session remains the only
-  standing open thread; sixteen runs deep with no new bug in the last two
-  is the expected steady state for a repo this thoroughly worked, not a
-  sign something's being missed.
-  A seventeenth run, 2026-08-31, 40h-to-cutoff, re-read the same three
-  files plus `styles.css` fresh and found a genuinely new gap by applying
-  the CSS-property-literacy lens already used on crit-4 one instance
-  further than either repo had tried: `touch-action: none` on `#game`
-  suppresses pan/zoom gestures but not iOS Safari's separate long-press
-  callout and text-selection magnifier (see the new dedicated `MEMORY.md`
-  entry above for the mechanism and why it's real stakes here, not just
-  cosmetic — the drag mechanic is a sustained touch-hold on this exact
-  element). Fixed with `-webkit-touch-callout: none` plus
-  `-webkit-user-select`/`user-select: none`, verified scoped to `#game`
-  only and `user-select: none` actually applied via `getComputedStyle`
-  against a real `pnpm preview`, console clean, `pnpm check` green (21
-  tests) before and after. Fixed and pushed (`e9b35f8`/`52cb922`),
-  `PROCESS.md` now at 18 cited moments. Not the last run. The human-timed
-  five-minute session remains the only standing open thread; a future run
-  might try `prefers-contrast` beyond `forced-colors` as the next
-  CSS-property-literacy variant, though this game's canvas-drawn
-  interactive surface (not a DOM button/border-based control) may make
-  that one inapplicable, same as `forced-colors` almost was.
-  An eighteenth and final run, 2026-08-31, 34h-to-cutoff, ran the
-  doctrine's finishing steps rather than another deepening pass: `pnpm
-  check` green (21 tests) at the start, a fresh `pnpm preview` pass at
-  both marking viewports (console clean, axe-core 0 violations,
-  html-validate clean except the expected doctype/void-style non-issues,
-  a mobile screenshot confirming the palette and swap button still render
-  correctly), wrote `reflections/crit-5.md` (283 words, naming the
-  clause-by-clause re-derivation technique itself as the run's
-  breakthrough, since it's what kept finding real bugs across a
-  dozen-plus runs after the sensor battery first read as exhausted, more
-  than any single fix did), confirmed `pnpm check:evidence` fully clean
-  (reflection + all 16 cited commits resolve), committed and pushed
-  (`bc2c7bb`). This deliverable is now **fully shipped** — this was the
-  last run for `comp4020-crit5-baishi`. The only thing left unresolved
-  across the whole run history is the human-timed five-minute play
-  session, which needs the studio crit itself, not a future run of this
-  agent.
-- **A live test finding a real, reproducible effect isn't automatically a
-  bug — trace the effect back to whether it's actually new behaviour, or
-  just an already-accepted mechanic surfacing at a moment that happens to
-  make it look novel.** On crit-5, forcing gameover then dispatching two
-  synthetic `PointerEvent`s in quick succession (pointer 1's restart tap,
-  pointer 2's incidental touch elsewhere on the canvas — same technique as
-  the fourteenth run's cross-pointer drag check, `window.__debug` plus
-  independent synthetic pointer identities) reproduced a real effect:
-  pointer 1's `pointerdown` resets the game (state flips to `"playing"`
-  before pointer 1's own handler returns), then pointer 2's `pointerdown`,
-  arriving after, is evaluated against that *new* state and grabs
-  `draggingPointerId`, which on real hardware (masked in this sandbox by
-  the already-logged `setPointerCapture` synthetic-pointer `NotFoundError`
-  — confirmed via an explicit `window.onerror` listener that it's the same
-  known artifact and not a new failure) would teleport the player to
-  wherever the stray second touch landed. First read, this looks like a
-  genuine restart-specific bug matching the shape of several already-fixed
-  ones in this file (cross-pointer/cross-key state confusion around a
-  transition). But tracing it one level further: touching *anywhere* on
-  the canvas to instantly grab-and-teleport the player is this game's own
-  deliberate, already-tested absolute-positioning touch design (confirmed
-  by the pointer-drag entries logged elsewhere in this file) — it applies
-  identically any time no pointer currently holds the drag slot, restart
-  or not. The "restart" framing made the repro look novel only because a
-  coincidental second touch is more likely to land near a deliberate
-  restart tap than at a random moment in ordinary play; the underlying
-  mechanism and its risk are identical either way. Singling out restart
-  for special protection (e.g. a grace-period guard) would be an arbitrary
-  fix for a symptom of standing, accepted design, not a distinct defect —
-  concluded correctly as "checked, not a new bug," no code change. General
-  lesson: when a live repro succeeds, the next question isn't "does this
-  need fixing" but "is the mechanism this repro exercises unique to the
-  scenario I just tried, or would the identical mechanism produce the same
-  effect at any other moment the app already accepts" — only the former is
-  a genuine, scoped defect worth a scoped fix.
-- **A lesson logged for one repo can be a genuinely untried angle on a
-  different repo — check `MEMORY.md`'s own single-repo findings against
-  the current repo's code, not just against the exhausted battery already
-  run on it.** Crit-4's Drift had already taught that a `blur`-only
-  focus-loss handler misses same-window tab switches (`visibilitychange`
-  fires, `blur` doesn't, confirmed via web search on crit-5's run — see
-  the crit-5 seventh-run entry above). Crit-5's `main.ts` had its own
-  `blur` handler for exactly the same reason (clearing held keys/drag
-  state) but had never been checked against this specific gap across six
-  prior runs, because every one of those runs was either running the
-  general sensor battery or re-reading the brief/code fresh rather than
-  cross-checking a different repo's already-logged lesson. Generalises:
-  after "re-read the code fresh" and "re-run the sensor battery" are both
-  exhausted for a repo, a third search worth trying is scanning this
-  file's other single-repo entries for a technique or gap-class that
-  matches something in the current repo's code but was never actually
-  applied to it.
-- **An early-return branch in an event handler has to repeat any
-  `preventDefault()` the branches after it rely on, not just their own
-  logic — a handler that suppresses a key's default action only in its
-  "normal" branches leaves that default action live on whichever other
-  branch returns early first.** On crit-5, `main.ts`'s `keydown` handler
-  had a `gameover` branch (restart on any key) written before the
-  movement/hue-swap branches (each with their own `preventDefault()` for
-  the specific keys that need it), and the gameover branch returned
-  before ever reaching them. Space is the browser's own page-scroll-down
-  key, so restarting via Space after a loss let that default scroll
-  through unsuppressed — invisible whenever the page fits inside the
-  viewport (both this repo's marking viewports, confirmed via
-  `document.documentElement.scrollHeight` vs `window.innerHeight`) but
-  real the moment it doesn't (a `vh`-sized element shrinks with actual
-  viewport height, and a real phone's on-screen address bar reduces that
-  below what a fixed marking-viewport height alone assumes — confirmed by
-  sweeping `agent-browser set viewport 390 <h>` down from 844 and finding
-  real overflow appear at 600/500/400px). Confirmed the actual scroll
-  live with a temporary `window.__debug` hook forcing game-over, a real
-  `agent-browser press Space`, and reading `window.scrollY` before/after
-  (0 → 4 broken, 0 → 0 fixed) — a scroll doesn't throw a console error or
-  fail a test, so watching the page move was the only way to see it. Fix:
-  hoist the specific `preventDefault()` a later branch needs to run
-  *before* the early return, not the whole branch's other logic (the
-  hue-swap side-effect still only happens in `"playing"`). General
-  lesson, likely to recur in a future crit: whenever an event handler has
-  an early-return branch guarding some but not all keys, check whether
-  any of the *other* branches' `preventDefault()` calls needed to fire
-  unconditionally to suppress a browser default the early-return branch
-  would otherwise let through.
-- **"Restart on any keydown" is a different claim from "restart on any
-  keypress" — a `keydown` handler that doesn't check `event.repeat` reacts
-  to the browser's own key auto-repeat, not just to a fresh press.** On
-  crit-5, the `gameover` branch of `main.ts`'s `keydown` handler restarted
-  the round on every `keydown` unconditionally. Dying usually happens
-  mid-dodge, with a movement key still physically held — and a held key
-  keeps sending `keydown` events (flagged `repeat: true`) for as long as
-  it stays down, with no new player action at all. That auto-repeat was
-  silently wiping the game-over screen and score before the player had a
-  moment to see either, which is a real defect against the brief's own
-  "play ends somewhere" requirement — the ending existed for a frame or
-  two, then vanished on its own. Confirmed live with a temporary
-  `window.__debug` hook: dispatched a real `keydown` (adds the key to the
-  held-keys set), forced gameover, then dispatched a synthetic `keydown`
-  for the *same* key with `repeat: true` — state flipped straight back to
-  `"playing"`. Fixed with a one-line guard (`if (event.repeat) return;`)
-  ahead of the restart call; verified a release-and-repress of the same
-  key, or a fresh different key, still restarts immediately. General
-  lesson for any "any key restarts / dismisses / advances" handler: check
-  `event.repeat` specifically whenever the state being entered or exited
-  is one a player is likely to already have a key held down for — a
-  death mid-movement, a dismiss-on-keypress overlay shown while a key was
-  already down for some other reason, anything where the *triggering*
-  state change and the *held key* aren't independent events.
-  **Extended (crit-5, tenth run, 2026-08-29):** the same gap recurred one
-  keydown branch over, in a toggle rather than a state transition — the
-  same handler's Space-to-swap-hue branch flipped the player's colour on
-  every keydown, so holding Space past the OS auto-repeat threshold
-  flickered the hue uncontrollably with no further player action. Fixed
-  with the identical guard, verified the pointer/click path to the same
-  control was unaffected. The general lesson widens past
-  "restarts/dismisses/advances a *state*": any `keydown`-bound action
-  that's meant to fire once per physical press — a toggle, a discrete
-  step, a single shot — needs the same `event.repeat` check, not just
-  handlers that gate a state transition. When auditing a `keydown`
-  handler for this, check *every* branch's action against "would this
-  still be correct if called N times for one held key," not just the
-  branches that change game/UI state.
-- **A palette swap is easy to apply incompletely — grep for every colour
-  literal across the whole codebase, not just the file where the mechanic
-  lives.** On crit-5, the colourblind-safety hue swap (teal/pink → sky
-  blue/amber) landed cleanly in `main.ts` where the game logic is, but
-  `styles.css`'s decorative nav-link colour was never touched and kept
-  rendering the retired pink for two further runs before a Lighthouse pass
-  incidentally surfaced it. Not an accessibility bug by itself (a lone link
-  colour has nothing to be confused with), but a genuine consistency defect
-  — the site's own chrome disagreed with the palette the game had just
-  adopted. Whenever a future crit swaps a colour for accessibility or any
-  other reason, grep the whole repo for the old hex literals (CSS, TS,
-  SVG/PNG assets) before considering the swap done, not just the file the
-  bug report named.
-  **The inverse gap is just as real: a fix that introduces a new corrected
-  value only lands in the file the bug report named, and a sibling file
-  using the same underlying design token silently keeps the old, broken
-  one.** On `comp4020-final-baishi`, a contrast fix created `--link`
-  specifically because `--accent` alone fails AA against the page
-  background, and used it on `.tagline a` in `global.css` — but
-  `readme.astro`'s own scoped `<style>` block, styling every link rendered
-  from `README.md` (a different file, sharing the same CSS custom
-  properties), still referenced `--accent` directly, and nobody had ever
-  cross-checked it. Found on a later run's first-ever clause-by-clause
-  re-derivation of `README.md`/`CLAUDE.md` against the code — not a fresh
-  technical sensor, just reading the project's own files end to end and
-  checking every styled element against them. Whenever a contrast/palette
-  fix introduces a new named value to replace a bad one, grep for every
-  *other* place the bad value (or the same underlying color pairing) is
-  still used, not just confirm the one reported instance is fixed.
-- **To check whether a game/interaction's colour pair is distinguishable
-  under colour-vision deficiency, compute it — don't try to render or
-  screenshot a simulation.** `agent-browser` has no CVD emulation
-  (Chrome DevTools' own `Emulation.setEmulatedVisionDeficiency` isn't
-  exposed through it, same gap as the missing zoom/print-media/touch
-  primitives already logged above). Instead, apply the Machado, Oliveira &
-  Fernandes (2009) simulation matrices directly to the two hex colours in
-  Node: convert sRGB→linear, multiply by the published 3×3 matrix
-  (verified against the `colour-science` Python library's own dataset via
-  WebFetch before trusting the numbers — protanopia
-  `[[0.152286,1.052583,-0.204868],[0.114503,0.786281,0.099216],[-0.003882,-0.048116,1.051998]]`,
-  deuteranopia
-  `[[0.367322,0.860646,-0.227968],[0.280085,0.672501,0.047413],[-0.011820,0.042940,0.968881]]`,
-  tritanopia
-  `[[1.255528,-0.076749,-0.178779],[-0.078411,0.930809,0.147602],[0.004733,0.691367,0.303900]]`),
-  convert back linear→sRGB, then compare Euclidean RGB distance against
-  the un-simulated distance. On crit-5 this caught a real, otherwise
-  invisible failure: teal `#2dd4bf`/pink `#f472b6` simulate to RGB distance
-  ~27 under deuteranopia (vs ~222 normally) — a colourblind player
-  literally couldn't tell them apart, in a game whose entire rule is
-  telling them apart. Also check the replacement pair's contrast against
-  the actual background colour (WCAG relative-luminance formula, same
-  computation), not just its CVD separation — a pair that's well-separated
-  under simulation but low-contrast against a dark canvas (a plain navy
-  scored 1.64:1 against this game's `#171b2e`, versus teal's 9.15:1) would
-  trade one accessibility problem for another. This generalises to any
-  future crit/assignment whose mechanic or content depends on
-  distinguishing colours by hue alone.
-- **A temporary, uncommitted debug hook on `window` is the way to
-  playtest a game whose real state (obstacle positions, elapsed time,
-  score) lives in module scope with no DOM/CSS trace to read from
-  outside.** Same shape as crit-4's `AudioContext`-capture technique, but
-  for game state instead of an audio node: add a getter
-  (`window.__debug = { get state() { return {...} } }`) right after the
-  page's own setup code, rebuild, drive real input via `agent-browser`
-  (dispatched `KeyboardEvent`s for swap/move, `PointerEvent`s for drag),
-  and poll the getter with `eval` between actions. On crit-5 this let a
-  scripted bot play a real ~5-minute session against the live build and
-  prove the post-ramp difficulty doesn't become an unfair wall — something
-  arithmetic on `fallSpeed`/`spawnIntervalMs` alone couldn't settle.
-  Revert the hook before running `pnpm check`/committing; it's a
-  verification tool, not a shipped feature.
-- **A fix for a benign edge case can introduce a worse one — trace the fix's
-  own new code path through the game's per-frame logic before committing it,
-  not just whether it clears the symptom you set out to fix.** On crit-5, a
-  real window resize mid-round (via `agent-browser set viewport` after
-  `open`, using the `window.__debug` technique above to read module-scoped
-  state — distinct from the `style.zoom` reflow check logged elsewhere,
-  which a prior run had already found to be a testing-artifact false lead
-  for this specific canvas) surfaced a real gap: `resize()` reclamps the
-  player's x to the new, possibly-narrower canvas width but never touches
-  in-flight obstacles, so one can end up positioned outside the new bounds —
-  invisible and unreachable until it falls past the bottom and gets culled
-  normally. This is fully benign: no crash, no leak, and no effect on the
-  outcome, since an unreachable obstacle can neither kill the player nor be
-  matched. The obvious fix (reclamp obstacles' x the same way, one line in
-  `resize()`) built and looked correct at a glance — a live resize test even
-  showed obstacles correctly repositioned within the new bounds. But tracing
-  the timing carefully rather than trusting that one clean test run: `update()`
-  runs unconditionally on the very next `requestAnimationFrame` tick after a
-  resize, using whatever position `resize()` just set, so the clamp can
-  teleport a previously-unreachable, different-hue obstacle onto the
-  player's exact current position and end the round on the next frame —
-  purely from a window resize the player took no action to cause. That is
-  strictly worse than the bug it fixed: the original quirk can never affect
-  the outcome, while the "fix" can produce a genuinely unfair, unreactable
-  death, directly against this crit's own "a collision has to feel fair"
-  ethos (echoing the doctrine's own line, "only playing can tell you whether
-  the collision feels fair"). Reverted rather than shipped; no commit. The
-  general lesson: for any fix to a rare/benign edge case in something with a
-  per-frame update loop, ask what the fix's own new code path can produce in
-  combination with the *next* tick of that loop, not just whether it now
-  passes the specific scenario you were testing — "the live test passed"
-  and "the fix is actually an improvement" are different claims, and the
-  gap between them only shows up by reasoning through frame-by-frame
-  ordering, not by re-running the same test again.
-- crit-1 and crit-2 are both fully finished and pushed (reflections written,
-  all checks green, doctrine finishing steps done — crit-2 also had a
-  deepening pass find and fix two real issues, see `now.md`). Both repos have
-  stayed private throughout (confirmed again 2026-08-11: `api.github.com`
-  still 404s on `comp4020-crit2-baishi`), so the live Pages URL has never
-  been checked — per the harness-owned-shipping entry just above, this isn't
-  something a run needs to *do* anything about, just something worth a
-  read-only check once a repo is public.
-- `comp4020-ass1-baishi` (slider-based ink-shrimp explainer) is now **fully
-  shipped**, done at 21h-to-cutoff (2026-08-16, ~15:00): wrote
-  `reflections/assignment-1.md` (285 words, both standing prompts, the
-  shrimp-geometry moment as the named breakthrough since it's the most
-  demo-able for the week 4 retro this same entry doubles as), re-verified
-  `pnpm check` green and both marking viewports console-clean against a
-  local `pnpm preview`, confirmed `pnpm check:evidence` fully clean
-  (reflection + all 5 `PROCESS.md` citations resolve), committed
-  (`7d9a8c8`) and pushed to `origin/main`. Repo still 404s on
-  `api.github.com` and its Pages URL as of this push — expected, shipping
-  (visibility flip + Pages enable) is harness-owned, not something this
-  agent has credentials for. Nothing left for this deliverable except a
-  read-only live-URL check once the repo goes public.
-- `comp4020-ass2-baishi` (SLOP2474, "The Forger's Craft," a course-site
-  build on `astro-theme-university`/`astro-course-university`/
-  `astro-theme-slop`) arrived at this run (2026-09-14, 165h-to-cutoff)
-  already substantially built by prior runs/ticks: course config, all four
-  content collections (people/sessions/lectures/assessments), a real
-  slide deck, a course-specific policies page and `spec/course-content.test.ts`
-  were all in place and pushed. This run did a real live-browser
-  verification pass at both marking viewports across every page type,
-  found and confirmed one genuine AA-contrast fix that a prior tick had
-  already made but never verified live (see the new `contrast.ts`/oklch
-  entry above for the mechanism), declined to add a bespoke `spec/` test
-  for it, and rewrote `PROCESS.md` into a real 8-moment, 598-word account.
-  `pnpm check` and `pnpm check:evidence` both green, pushed at `fed3ba8`.
-  Not the last run — no reflection expected (assignment, not a crit). See
-  `now.md` for the flagged next angles (full site tab-order walk,
-  Lighthouse, `pnpm audit`/`outdated`, reduced-motion on the deck).
-  A second run, 2026-09-14, 159h-to-cutoff, worked that exact list. `pnpm
-  audit` found 12 vulnerabilities (1 critical, 7 high, 4 moderate),
-  including a real astro advisory reachable at the pinned version; a plain
-  in-range `pnpm update` cleared every one with no pin crossing a major
-  version, `pnpm check` staying green (`85fd45d`). A copy-vs-behaviour pass
-  found one real inconsistency: every other in-prose assessment reference
-  site-wide deliberately links the generic `/assessments/` listing with
-  generic anchor text, but the policies page named a specific assessment
-  ("Assignment 1") while still linking the generic listing — fixed to link
-  its own page (`98796bb`). The keyboard tab-order walk, a first-ever
-  Lighthouse run (clean, all five categories 1.0 — unlike every other
-  deliverable's first Lighthouse run in this file, which all found
-  something), and a home-page-prose-vs-assessment-structure check all came
-  back "checked, confirmed correct." The reduced-motion check hit a new
-  category of unverifiable-live gap — see the dedicated `navigator.webdriver`
-  entry below. `PROCESS.md` left unchanged (already at 598 of this
-  assignment's 600-word cap); see `now.md` for the note that the audit fix
-  is worth swapping in if a future run has trimming room. Not the last run.
-  A third run, 2026-09-15, 146.5h-to-cutoff, worked the flagged tab-order/
-  zoom/mobile list and found the run's most significant fix yet: the
-  second run's own claim that the hero heading's axe "incomplete" flag was
-  just the harmless oklch/gradient limitation had never actually been
-  measured, only assumed from the pattern matching nav links and tag
-  badges. Pixel-sampling the live rendered composite found a real, marginal
-  AA failure (2.99:1, under even the 3:1 large-text minimum) — see the
-  corrected `contrast.ts`/oklch entry above for the mechanism and the
-  pure-black-compositing linear-scalar fix. Fixed (`2196f23`) and the
-  now-inaccurate `PROCESS.md` claim corrected in the same pass, restaying
-  under the 600-word cap by tightening the surrounding prose rather than
-  just appending (`096dcf0`). The 200%-zoom reflow check and a full
-  mobile-viewport (390×844) pass across every page type both came back
-  clean — no horizontal overflow, no console errors. Two more findings
-  confirmed real but correctly out of scope (upstream theme/platform code,
-  not this course's own content, per the established boundary): the
-  footer's `.at-footer-theme-toggle` resets `all: unset` with no
-  `:focus-visible` re-added, a real keyboard-focus-visibility gap; and the
-  deck's structural controls aren't reachable via Tab, only via the arrow
-  keys the deck's own docs name as its intended input. `pnpm check` and
-  `pnpm check:evidence` both green, pushed. Not the last run — no
-  reflection expected. See `now.md` for what's left.
-  A fourth run, 2026-09-15, 135h-to-cutoff, re-read the brief's own submission
-  paragraph literally rather than treating its spec bullets as the whole
-  ask: "the narrative should explain course-design decisions, which were
-  encoded into the harness... and which were deliberately omitted" is a
-  specific instruction about `PROCESS.md`'s *content*, not just its
-  word-count/citation format — and the file, though accurate, never once
-  named anything as deliberately left unchecked. Added a paragraph doing
-  exactly that (the teacher-per-week spec only checks *a* teacher exists,
-  not the *right* one; prose voice and throughline coherence are left for a
-  marker, not a test) and trimmed elsewhere to hold the 600-word cap
-  (`6e3eb88`). A full non-adjacent-page sweep at both viewports (sessions,
-  a lecture, an assessment, the deck, policies) came back console-clean and
-  overflow-free everywhere, matching the third run's mobile pass. Reading
-  the home page's own "what you will do" paragraph closely for voice
-  quality (a genuinely untried angle — prior runs read it for *content*
-  accuracy, not sentence-level clarity) found a real, previously-unnoticed
-  bug: "a studio built around that failure rather than around it" is
-  circular, since "it" naturally resolves to "that failure," saying nothing
-  contrastive at all. Fixed to "the studio is built around that failure,
-  not around the making" (`c71df4c`). `pnpm check` green throughout, both
-  commits pushed. Not the last run. See `now.md` for what's left — the
-  same close-prose-read technique hasn't yet been applied to the twelve
-  lecture/session bodies, only home and the three assessments/policies.
-  A fifth run, 2026-09-16, 124h-to-cutoff, closed that exact gap: read all
-  ten lecture bodies and all twelve session bodies for voice/clarity, plus
-  the three people bios and the week-01 deck for the first time with this
-  lens. All clean — no circularity, no repetition, consistent voice
-  throughout. `pnpm audit` clean, `pnpm outdated` unchanged (same four
-  major-only entries, still correctly left alone), `pnpm check`/
-  `check:evidence` green, `PROCESS.md` unchanged at 599/600 words. No
-  commits — the close-prose-read technique has now covered every page type
-  in the site at least once, with nothing found on this last sweep. This
-  is the expected steady state for a repo this thoroughly worked (see the
-  crit-4/crit-5 precedent elsewhere in this file), not a sign something's
-  being missed. Not the last run.
-  A sixth run, 2026-09-16, 111h-to-cutoff, tried a genuinely new angle
-  instead of repeating the exhausted technical-sensor/prose-reread battery:
-  fetched the brief's own three named exemplars for *this* assignment
-  (Calling Bullshit, Fab, CS007 — distinct from assignment-1's own
-  exemplar) and compared structure/tone/throughline-technique directly
-  against SLOP2474 — see the extended exemplar-comparison entry above for
-  the finding (the course already does Calling Bullshit's single-metaphor
-  move, plus live cross-week callbacks in the lecture prose that neither
-  exemplar does as explicitly). `pnpm check` reconfirmed green (36 pages, 0
-  axe violations, no broken links, 6/6 tests). No code change, no
-  commit — a citable positive finding for the response-to-brief criterion,
-  not a defect. Not the last run.
-  A seventh run, 2026-09-17, 100h-to-cutoff, closed that run's own flagged
-  lead: slop.university exists but is a satirical news site (mock research
-  papers/posters), not a cohort course listing, so there is nothing there to
-  compare this course against — a dead end, not an untried angle, don't
-  re-fetch it expecting a catalogue to have appeared. `pnpm audit` clean;
-  `pnpm outdated` had one genuinely in-range patch (`@types/node`, still
-  inside its `^24.13.4` pin) among otherwise major-only entries — `pnpm
-  update` picked it up, `pnpm check` stayed green, committed (`2669c3c`). A
-  fresh live-browser spot check (home + week 9) came back console-clean.
-  `PROCESS.md` still full at 599/600 words. Not the last run.
-  An eighth run, 2026-09-17, 93h-to-cutoff, tried a genuinely new angle
-  instead of the exhausted technical-sensor/prose-reread/exemplar-comparison
-  battery: checked whether prior contrast fixes had ever been verified in
-  dark mode, not just light — they hadn't, across seven prior runs. Found a
-  real, previously-unverified AA failure (see the new dedicated
-  `light-dark()`/dark-mode entry above for the mechanism and fix) and fixed
-  it: `.at-card-title`'s colour is now `light-dark(var(--at-secondary),
-  var(--at-primary))` rather than the fixed `--at-secondary` alone. Fixed
-  and pushed (`ccea0a6`/`5d47b76`), `PROCESS.md` updated to cite it as a
-  third live-browser defect, held to exactly 600/600 words by tightening
-  the "How I got here" prose rather than cutting a moment. `pnpm check`/
-  `check:evidence` both green. Not the last run.
-  A ninth run, 2026-09-17, 87h-to-cutoff, checked the raw assignment JSON's
-  `spec` field directly (not the WebFetch tool's AI-paraphrased summary,
-  which had rendered the course-code rule as "three-digit" ambiguously) and
-  confirmed the "SLOPxxxx keeps the three digits the repo arrived with,
-  first digit is the ANU level" rule is already correctly schema-enforced
-  in `course-config.ts` (a zod `superRefine` ties `level` to the code's own
-  first digit, with a comment naming why 2 was chosen) — nothing to fix,
-  a genuine "checked, confirmed correct" against a clause no prior run had
-  explicitly verified. `pnpm audit` clean, `pnpm outdated` unchanged (same
-  three major-only entries). Fetched the assessment page directly for the
-  first time this run and confirmed `PROCESS.md`'s commit-citation format
-  (hash as link text, GitHub commit URL as target) matches its stated rule
-  exactly. The main finding: a live resize-mid-interaction check on the
-  slide deck specifically (see the new dedicated `MEMORY.md` entry above —
-  the assessment page's own HD artefact-band language names exactly this,
-  and it had never been run against the deck across eight prior runs) came
-  back clean — hash and rendered slide both held steady across a real
-  viewport change mid-navigation, console clean. No code change, no
-  commit — a legitimate "checked, confirmed correct" outcome. Not the last
-  run.
-  A tenth run, 2026-09-18, 76h-to-cutoff, ran `pnpm check`/`check:evidence`
-  green (unchanged) then tried a genuinely new angle: a **full-site**
-  dark-mode contrast sweep with a hand-rolled canvas-based checker (see the
-  new dedicated `MEMORY.md` entry above), rather than trusting the one
-  element a prior fix had verified in dark mode to represent the whole
-  site. Checked home, sessions index, lectures index, assessments index,
-  people index, policies, one lecture, one assessment, and the week-1
-  deck's current slide — all clean except a false-positive flag on the
-  hero title, traced to the checker's own background-image/gradient blind
-  spot (the same category axe-core has) rather than a real defect: the
-  hero's colour and scrim are fixed literals with no `light-dark()`
-  anywhere, so it's provably scheme-independent and the existing light-mode
-  fix already covers it. No code change, no commit — a legitimate "checked
-  more thoroughly, confirmed correct" outcome. Not the last run.
-  An eleventh run, 2026-09-18, 69h-to-cutoff, tried a genuinely new angle:
-  swept the week-1 deck's contrast across all 8 slides and all 4 slide
-  classes it actually uses (default, `impact`, `quote`, `centered`),
-  rather than the slide-1-only checks every prior deck pass had done. First
-  confirmed the deck is a scheme-invariant fixed-dark surface (`set media
-  dark`/`light` produced byte-identical computed colours), settling that
-  no "dark mode" framing adds anything on this specific page — see the two
-  new dedicated `MEMORY.md` entries above for that finding and for two
-  checker false-positives found and fixed along the way (an element's own
-  local opaque background needs checking before walking up to ancestors;
-  the theme's shared `.at-heading-anchor` permalink icon is a zero-size
-  hover-reveal decoy, not a real element to test). After both checker
-  fixes, all 8 slides passed AA cleanly. No code change, no commit — a
-  legitimate "checked, confirmed correct" outcome, and a genuinely
-  untried angle (per-slide-class deck coverage) rather than a repeat. Not
-  the last run. Several further runs through 2026-09-19 (~39h-to-cutoff)
-  kept re-confirming the same exhausted state — brief re-fetched with no
-  drift, `pnpm check` green, no new technical/content angle found — without
-  further `MEMORY.md` entries, since nothing new surfaced beyond what's
-  already recorded here (see `now.md` history for the specific angles each
-  of those runs tried, e.g. the studio-only-weeks structural check and the
-  `related:` prefix-convention check on 2026-09-19).
-  The final run, 2026-09-20, 28h-to-cutoff, ran the doctrine's finishing
-  steps: brief re-fetched (identical, no drift), `pnpm check` green (36
-  pages, 0 axe violations, no broken links, deck sound, 6/6 tests),
-  `pnpm check:evidence` green (10 cited commits resolve), `pnpm audit`
-  clean, and the `astro`/`vite`/`rolldown` patch-bump retry still blocked
-  on the same `@oxc-project/types@0.150.0` upstream gap — fourth
-  consecutive run confirming it, not yet healed. A fresh `pnpm build` +
-  `pnpm preview` live-browser pass at both marking viewports (home, a
-  session, an assessment, a lecture, the week-1 deck, policies) came back
-  console-clean throughout, screenshots confirmed correct rendering at
-  both sizes. `PROCESS.md`'s closing line still read "Not a finishing
-  run" from when it was written mid-week — updated to reflect that this
-  is the finishing run, re-trimmed to hold the 600-word cap (598/600).
-  Committed and pushed (`64d9ac6`). This deliverable is now **fully
-  shipped** — this was the last run for `comp4020-ass2-baishi`. No
-  reflection file needed (assignment, not a crit) — the week 7 retro
-  presents from `PROCESS.md` directly. Nothing left except a read-only
-  live-URL/Pages-visibility check once the repo goes public, same as
-  every other fully-shipped deliverable in this file.
-- Writing `PROCESS.md` incrementally during a build/deepen run (not only in
-  the inside-24h finishing steps) worked well twice now — crit-2's two
-  deepening fixes and assignment-1's shrimp-geometry fix were both written
-  up while fresh rather than reconstructed at cutoff. Keep doing this: it's
-  consistent with the doctrine's finishing-step requirement, just done
-  early, and a stale template left untouched until the last day is a worse
-  failure mode than an early draft that gets extended later.
-  **Extended (crit-5, 2026-08-26):** this now holds from the very first
-  build run, not just deepen runs — crit-5's `PROCESS.md` was written with
-  three genuine cited moments on the same run the game was first built,
-  before any deepening pass existed to defer it to. Nothing about the
-  moments-format needs the repo to be further along first; a first-run
-  build already has real decisions worth citing (a design call, a testable
-  rule, a bug found by playing).
-- Every deliverable's template ships `public/card.png` as a literal
-  dashed-border "Replace this card" placeholder image, and nothing in
-  `pnpm check` or CI catches an unreplaced one (the invariants only check
-  the `og:image` meta tag's *presence*, per `spec/README.md` — a path that
-  resolves to the placeholder still passes). Replace it as an early
-  build-phase task on every new deliverable, not something deferred to
-  finishing steps: on crit-5, a quick `agent-browser`-rendered 1200×630 card
-  (dark background, the game's own two hues, one-line pitch) done during the
-  first build run took a couple of minutes and closed the gap immediately,
-  rather than leaving a giveaway placeholder live on a link preview for
-  however many runs the repo stays in build/deepen phase.
-- Pushing to `origin/main` is not just a final-run step — every crit-4 run
-  logged above pushed after its own commits, mid-week, not only at cutoff,
-  and crit-5's first build run (2026-08-26) followed the same pattern
-  deliberately: the doctrine's own framing ("commits and `memory/` are the
-  only continuity" between runs) implies a future run's starting state is
-  whatever's on `origin/main`, not necessarily this run's local working
-  tree. Local-only commits are one dropped/fresh checkout away from being
-  invisible to the next run. Push at the end of every run that has commits
-  worth keeping, not just the one the prompt names "last."
-- A "no tutorial, teaches itself" constraint (crit-5's game brief; may recur
-  for the final project) is satisfiable by pacing rather than by any visible
-  affordance text: design the opening state so the *first* consequence of
-  each new rule is cheap and unambiguous (crit-5's first obstacle is sparse
-  and 50/50 on colour, so an early hit is either an obviously-avoidable miss
-  or a same-colour pass-through that reads as "that was fine"), then let
-  necessity teach the harder rule once the easy strategy (dodge everything)
-  stops being sufficient. This generalises past this one game: any
-  self-teaching interaction can be checked by asking "what does a first-time
-  player's very first mistake actually cost them, and does its consequence
-  alone explain the rule."
-- A game/interaction whose entire rule rests on distinguishing two colours
-  (crit-5's same-hue-safe/different-hue-fatal mechanic) has a colourblind-
-  accessibility failure mode no generic a11y sweep (axe-core, html-validate)
-  will ever catch, because the "content" is drawn canvas pixels with no
-  text alternative to check — a colourblind player may be structurally
-  unable to tell the two hues apart, i.e. unable to play at all, not just
-  inconvenienced. Not yet checked on crit-5 (see its `now.md`); the general
-  technique for a future run: verify the chosen hue pair against a
-  colour-vision-deficiency simulation (e.g. a protanopia/deuteranopia
-  filter) before trusting "two visually distinct colours" as accessible on
-  eye alone, and prefer pairs separated in lightness/shape as well as hue
-  if the mechanic allows it.
-- `comp4020-crit4-baishi` (Drift, the eight-pad pentatonic instrument) had a
-  full deepening pass on 2026-08-19, 160h-to-cutoff: closed the audio-liveness,
-  audit-battery, and card.png threads the prior run's `now.md` had opened (see
-  `now.md` for detail), and found + fixed a real self-introduced desktop
-  layout regression along the way (see the `vw`-vs-container-width entry
-  above). All 8 commits pushed to `origin/main` (`b2de0d1`). A later run on
-  2026-08-20, 136h-to-cutoff, found and fixed a genuinely new bug in the same
-  repo (see the blur/visibilitychange entry below) — pushed at `b48a2d4`. A
-  third run the same day, 130h-to-cutoff, closed the specific lens that
-  fix's own `now.md` had flagged as the next thing to try (does the
-  `AudioContext` itself ever need a resume-on-focus handler distinct from
-  the voice-release one) plus a previously-untried live keyboard-brightness
-  check — both came back "checked, nothing to fix" (see the
-  constructor-capture entry above), no commits. A fourth run, 2026-08-21,
-  119h-to-cutoff, tried the real-mouse-drag-glissando and analyser-based
-  pitch-correctness angles (see the two entries just above) — also came
-  back "checked, confirmed correct," no commits. A fifth run the same day,
-  112h-to-cutoff, found one genuinely untried angle left (audio-domain
-  proof of the vertical brightness/filter sweep, see the entry just above)
-  and it too came back "checked, confirmed correct," no commits. A sixth run
-  the same day, 106h-to-cutoff, found one more genuinely untried angle (full
-  8-voice chord headroom/clipping, see the entry just above) — also
-  "checked, confirmed correct," no commits. The technical audit battery for
-  this repo is now exhausted across six runs and two full days without a
-  single further finding — a future run should treat "I can't think of an
-  untried technical check" as the expected state here, not a reason to
-  invent one. Only open thread left: pad-count/range untested against a
-  real naive player — needs the studio crit itself, not another
-  self-administered probe. Not the last run — no reflection yet, correctly.
-  A seventh run, 2026-08-22, 95h-to-cutoff, found a real bug anyway — not via
-  another sensor, but by re-reading the brief's own interaction clauses one
-  at a time against the current code (see the brief-clause-re-derivation
-  entry below): Tab+Enter/Space activation only ever gave a fixed 180ms blip
-  regardless of hold duration, unlike every other input path's real sustain.
-  Fixed and pushed (`bbd50d6`/`bd3ff2a`). The exhausted-sensor-battery
-  framing above was correct for *sensors* but doesn't mean "nothing left to
-  find" — a different search method found something real. An eighth run the
-  same day, 88h-to-cutoff, reapplied the identical technique to the
-  blur/visibilitychange fix itself (moment 5) and found it only covered the
-  whole page losing focus, not focus moving within the page: holding Space
-  on a pad then tabbing to the next one without releasing left the first pad
-  droning forever, since the eventual `keyup` targets wherever focus
-  currently is, not the pad focused at keydown. Fixed with a `focusout`
-  listener, pushed (`3bbf17a`/`99b75db`). Two real bugs found this way in a
-  row — see the updated brief-clause-re-derivation entry above for the
-  generalised lesson. A ninth run, same day, 82h-to-cutoff, applied the
-  identical technique a third time to that `focusout` fix itself (the
-  specific edge case its own `now.md` had flagged: does releasing on *any*
-  focus-loss reason ever end a note early during a cross-modal chord) and
-  this time came back clean — see the entry above for the mechanism
-  (pointerdown's existing `preventDefault()` already stops pointer input
-  from stealing focus off a keyboard-held pad). No code change, no commit.
-  A tenth run, 2026-08-23, 71h-to-cutoff, tried one more genuinely untried
-  angle — real pointer-drag audio-domain proof of the brightness sweep, as
-  opposed to the keyboard-arrow version already checked (see the entry
-  above) — also came back "checked, confirmed correct," no commits. An
-  eleventh run, same day, 64h-to-cutoff, re-read `main.ts`'s own comments
-  clause-by-clause (not the brief this time — the code's own claims) and
-  found one never live-tested: the Tab+Enter/Space fix's comment claims
-  `event.preventDefault()` on `keydown` stops the button's native
-  click-activation from also firing the separate assistive-tech `click`
-  fallback (a different voiceId, `click-x` vs `focus-x`, so a real
-  double-fire would layer two live oscillators, not no-op). See the
-  oscillator-count-patch entry below for the check and result — also came
-  back "checked, confirmed correct," no commits. A twelfth run, 2026-08-23,
-  58h-to-cutoff, found one more genuinely untried angle: real independent
-  multi-touch through the `pointerPads` Map itself, not the mouse+keyboard
-  stand-in every prior chord/headroom check had used (see the
-  pointerPads-cardinality entry above) — also came back "checked, confirmed
-  correct," no commits. A thirteenth run, 2026-08-24, 47h-to-cutoff, found a
-  new real gap by reading the stylesheet fresh against real-device touch
-  defaults rather than another synthetic probe: `.pad` had no
-  `-webkit-tap-highlight-color` override (see the entry above). Fixed
-  pre-emptively — the visual artifact itself is unverifiable in this
-  sandbox — and pushed (`1eef57a`/`1a62142`). A fourteenth run, 2026-08-24,
-  40h-to-cutoff, followed up on that run's own flagged next-action
-  (pinch-zoom/user-scaling) and found another real gap in the same vein:
-  `body` had a blanket `touch-action: none` blocking pinch-zoom
-  page-wide, not just on the pad row it was meant to protect (see the
-  touch-action-scoping entry above). Scoped to `.instrument`, verified via
-  `getComputedStyle` and a live mouse-drag re-check, pushed
-  (`000b512`/`778efcb`). Not the last run. A fifteenth run, 2026-08-24,
-  34h-to-cutoff, was the final run: extended the same CSS-property-literacy
-  lens the prior two runs had found live in (the `now.md` handoff had
-  flagged `forced-colors`/`prefers-contrast` as untried variants) and found
-  one more real, unverifiable-in-sandbox gap of the same shape —
-  `.pad` is `appearance: none; border: none`, getting its whole visible
-  circle from a `background` gradient and `box-shadow`, both forced to
-  `none` under Windows High Contrast (`forced-colors: active`), so a pad
-  would render as a bare letter with no boundary. Fixed with a
-  `@media (forced-colors: active)` rule borrowing MDN's own documented
-  fix shape (a `ButtonBorder`/`Highlight` border), confirmed scoped
-  correctly via `getComputedStyle` reporting the ordinary-mode border
-  unchanged (`806c2da`). Then ran the full finishing routine: local
-  `pnpm check`/`check:evidence` green, both marking viewports
-  screenshotted and console-clean against a real `pnpm preview`,
-  `PROCESS.md` extended to a 10th cited moment (`06d6bc5`), wrote
-  `reflections/crit-4.md` (289 words, both standing prompts, naming the
-  clause-by-clause re-derivation technique as the breakthrough since it's
-  what kept finding real bugs after the automated sensor battery had gone
-  dry six-plus runs running), committed and pushed (`fe72eca`). This
-  deliverable is now **fully shipped** — this was the last run for
-  `comp4020-crit4-baishi`.
-- **A sustained-note instrument (anything with press-and-hold voices) needs a
-  blur/visibilitychange check, not just a press-then-release check.** On
-  crit-4's Drift, every prior interaction test had driven a full
-  keydown→keyup or pointerdown→pointerup cycle on a page that stayed focused
-  the whole time — so nothing had ever exercised the ordinary real-world case
-  of alt-tabbing away while still holding a key or pointer down. Confirmed
-  live: dispatch a real `keydown`/`mousedown`, then `window.dispatchEvent(new
-  Event('blur'))` (or flip `document.hidden` and dispatch
-  `visibilitychange`) with *no* matching release, and check whether the
-  pad/voice state ever clears. On Drift it didn't — `keyup`/`pointerup` only
-  fire on a page that's still focused, so a backgrounded tab has no way to
-  ever hear the release, and the note drones forever. This is a real,
-  accidentally-triggerable bug against "no fail state," not a theoretical
-  edge case, and none of axe-core/html-validate/Lighthouse/a keyboard
-  tab-order walk would ever catch it — it's specific to hold-to-sustain
-  interaction models. Fix: a `releaseAllVoices()` wired to both `blur` and
-  `visibilitychange`, releasing every tracked voice through the instrument's
-  normal release envelope. Worth checking on any future crit/assignment
-  built around press-and-hold (a synth pad, a held button, a drag-to-sustain
-  control) — the same gap will exist wherever release depends on an event
-  that only fires while the page stays focused.
-- **A boolean/mutable flag set by one event and only ever cleared by that
-  same event's natural counterpart will leak whenever something *else*
-  ends the interaction first.** This is the same shape as the
-  blur/visibilitychange lesson above (a `keyup`/`pointerup`-only release
-  misses a backgrounded tab), but it generalises past focus loss to any
-  forced state transition. On crit-5, `dragging` was set `true` on
-  `pointerdown` and only ever set `false` on `pointerup`/`pointercancel`
-  — nothing accounted for the *game* ending the interaction instead (a
-  fatal collision arriving while the pointer was still physically down,
-  which has no matching pointerup to clear it). `pointermove` kept
-  applying the drag to the player position under the game-over overlay
-  because it only checked its own flag, never the broader state machine.
-  Confirmed live with a temporary debug hook: forced the collision
-  mid-drag, then kept moving the pointer, and watched the tracked position
-  keep changing while the game state stayed "over." Fixed by having the
-  state-transition function (`gameOver()`) clear the flag itself, the same
-  pattern the existing `releaseHeldInput()` already used for focus loss —
-  once one place resets it, every consumer's existing guard on that flag
-  takes over for free. General check for a future crit: for every mutable
-  flag an input handler sets on its own "start" event, find every *other*
-  way the interaction it represents can end (not just that handler's own
-  natural end event) and confirm each one clears the flag too — a review
-  technique distinct from re-reading handlers in isolation, since the bug
-  only exists in the combination of two handlers that each look correct
-  alone.
-- **The same "shared mutable flag" shape recurs one dimension over: a flag
-  that's fine when only one instance of its triggering event can ever be
-  active at once (true for a mouse — exactly one pointer) breaks the
-  moment a second concurrent instance becomes possible (true for touch —
-  multiple simultaneous pointers).** On crit-5, `dragging` (before the
-  gameOver-clearing fix logged above) was a plain boolean: any
-  `pointerdown` set it true, any `pointerup`/`pointercancel` set it false,
-  with no record of *which* pointer was actually dragging. This is
-  identical in kind to crit-4's `pointerPads` Map lesson (a map keyed by
-  an identity needs its cardinality tested, not just single-entry
-  behaviour) but here the bug was a scalar with no identity at all rather
-  than a map misused. Confirmed live with a temporary `window.__debug`
-  hook and two independent synthetic `PointerEvent` identities: pointer A
-  dragged normally, pointer B (an incidental second touch elsewhere on
-  the canvas — a palm edge, a bracing finger) went down and immediately
-  up, and pointer A's next move was silently dropped even though A was
-  never released — B's unrelated release had cleared the shared flag.
-  Fixed by replacing the boolean with `draggingPointerId: number | null`
-  and checking `event.pointerId === draggingPointerId` at every
-  read/write site. **Testing wrinkle worth recording separately:**
-  `canvas.setPointerCapture()` throws `NotFoundError` for a second
-  synthetic pointerId dispatched while a first synthetic pointer already
-  holds capture, even though a lone synthetic pointerId dispatched by
-  itself captures fine — this is a limitation of simulating multi-touch
-  via `dispatchEvent` (same family as the already-logged `-p ios`/
-  `xcrun simctl` gap: only genuine hardware creates fully independent
-  active-pointer sessions), not evidence the app's code path is wrong.
-  Don't let that exception alone read as "the app throws" — isolate
-  whether the *bug being tested* (here, a flag transition) still
-  reproduces via the parts of the sequence that don't depend on capture
-  succeeding (B's `pointerdown`+`pointerup` alone, independent of whether
-  its `setPointerCapture` call threw, was enough to prove the flag leak).
-  General check for any future crit with a canvas/DOM element that could
-  ever receive two pointers at once (a drag surface, a multi-touch
-  instrument, a two-finger gesture): grep for a bare boolean tracking
-  "is something being dragged/pressed/held" and ask whether it would
-  survive a *second*, unrelated pointer's full down-then-up cycle
-  happening in the middle of the first one's gesture.
-- **A third instance of the same shared-boolean-vs-pointerId shape, found by
-  grepping for the pattern itself (the general check named just above) on a
-  third, unrelated repo — and this time the failure mode was worse than
-  either prior instance.** On `comp4020-final-baishi`'s drawing zone
-  (`src/lib/draw.ts`), `drawing` was a bare boolean exactly like crit-5's
-  `dragging` before its fix. A stray second pointer's `pointermove` got
-  silently appended into the real stroke (no identity check at all, unlike
-  crit-5 where the gap was narrower — there the second pointer's *down* was
-  blocked by a separate `done`-style guard; here `pointermove` had no guard
-  of its own). Worse, the stray pointer's `pointerup` calling
-  `finish(event)` executed `zoneHit.releasePointerCapture(event.pointerId)`
-  for a pointer ID the zone never captured — and unlike crit-5's sandbox-only
-  `setPointerCapture` artifact (logged just above, masked by a
-  synthetic-dispatch limitation that wouldn't occur on real hardware), this
-  `NotFoundError` is a *real*, spec-correct throw for any pointer ID that
-  was genuinely never captured, synthetic or not. Because `finish` is an
-  `async` function and the throw happens before its first `await`, it
-  becomes an **unhandled promise rejection** (confirmed via a
-  `window.addEventListener('unhandledrejection', ...)` listener, not
-  `window.onerror` — a synchronous-looking throw inside an `async` function
-  body doesn't fire a plain `error` event), not a caught exception — so
-  `submitMark()` for the *real* pointer's eventual `finish` call never ran.
-  The flag (renamed `drawingPointerId`) was already cleared by the stray
-  pointer's own `finish` invocation, so the genuine pointer's own, correct
-  `pointerup` right after was a silent no-op: no fetch, no status update, no
-  visible error, and the app's own `done` one-mark-per-visit flag was
-  already set — the zone was now permanently inert for the rest of that
-  page load, with no sign anything had gone wrong. Confirmed live with two
-  independent synthetic `PointerEvent` sequences against a running
-  container, before and after the fix (`drawingPointerId: number | null`,
-  checked in `pointermove` and `finish` alike). **A genuinely new technique
-  note from this instance:** a jsdom-based unit test of this fix was
-  considered and ruled out directly, not assumed impossible —
-  `svg.createSVGPoint`, `svg.getScreenCTM` and `element.setPointerCapture`
-  are all simply absent from jsdom (confirmed with a two-line Node script,
-  not inferred from "SVG is usually bad in jsdom"), so any client-side
-  pointer-identity bug touching real SVG geometry or pointer capture isn't
-  reachable by this project's existing `spec/` layer (all HTTP-level, per
-  its own stated shape) at all — a live two-pointer `agent-browser`
-  reproduction is the only verification available, not a shortcut taken
-  because writing the jsdom test seemed like too much effort. Worth
-  re-checking this exact jsdom gap before assuming any future crit's
-  pointer/drag bug can get proper `spec/` coverage, rather than discovering
-  the gap fresh each time.
-- **"Never erased" has a second half nobody checks: never *overpainted*.**
-  On `comp4020-final-baishi`, ten runs verified "no update/delete path
-  exists" and never asked whether a new mark could land on an old one. It
-  could: `setPointerCapture` keeps a drag reporting `pointermove`s after the
-  pointer leaves the capturing element, so an ordinary over-long stroke ran
-  back across every earlier mark, and the API accepted any path string.
-  General check for any shared-canvas/append-only surface: grep for
-  `setPointerCapture` and confirm captured points are clamped to the
-  intended region, and confirm the server bounds geometry (parse the path
-  grammar strictly; for SVG `Q`/`C`, bounding control points bounds the
-  curve via the convex-hull property; allow for stroke width/halo). A
-  persistence promise is about what the user *sees* surviving, not just
-  which SQL statements exist.
-- **An SSE endpoint must write something the moment it opens.** Node
-  (and Fly's proxy) hold response headers until the body's first byte, so
-  a stream that only sends heartbeats leaves `EventSource` at
-  "connecting" until the first one. Found on `comp4020-final-baishi`;
-  an immediate comment line (`: open`) fixes it. Test the first chunk,
-  not just the headers.
-- **Spec files hitting one shared running app race by default** (vitest
-  runs files in parallel). A test that counts rows or expects the next
-  id passes or fails on timing. Set `fileParallelism: false`, and treat
-  a live-delivery test that passed in CI as unproven until it's run
-  red against the unfixed build.
-- **A live-sync client that dedupes by "id <= highest seen" loses data
-  whenever ids can arrive out of order** — and they can: a POST response
-  and an SSE stream are separate connections, and a reconnect replays
-  older ids after the client already saw a newer one from its own write.
-  Server-side replay being correct says nothing about the client. Keep a
-  set of drawn ids (plus the server-rendered floor). Repro on
-  `comp4020-final-baishi`: `agent-browser network route --abort` on the
-  stream, write from elsewhere, write from the page, unroute, compare
-  the page's count with the server's. A jsdom spec loading the real
-  rendered HTML can drive the client module directly when it touches
-  only plain DOM.
-- **`EventSource` reconnects on its own only after a network error; a
-  reconnect answered with a non-200 (Fly's proxy gives 502 while a deploy
-  or wake fails) closes it for good, silently.** Repro: kill the app,
-  serve a 503 on its port (tiny `http.server`) through one retry, restart
-  the app, write a mark — the page never gets it. Fix: on `error` with
-  `readyState === CLOSED`, open a new one after a backoff from a replay
-  floor the server can fill. Found on `comp4020-final-baishi`.
-- **A CI-driven Fly deploy can fail on Fly's side** (machines-API timeout,
-  "lease currently held by Fly.io system") and leave the app 502 for
-  minutes. After every push on a CI-deployed repo, check `flyctl
-  releases` for `failed`; a manual `flyctl deploy --remote-only
-  --ha=false` clears the lease and ships. Also check the Actions run
-  itself, readable without auth: `curl -s 'https://api.github.com/repos/
-  <org>/<repo>/actions/runs?per_page=3'` for `conclusion`, then
-  `.../runs/<id>/jobs` for the failing step — a failed `check` job skips
-  `deploy`, so no failed Fly release appears at all.
-- **Live-sync clients that auto-scroll or reflow when remote content
-  arrives must hold still while the local user has a pointer down.** On
-  `comp4020-final-baishi`'s live scroll, an incoming mark grew the canvas
-  and auto-followed to the new end mid-drag, so the rest of the local
-  stroke mapped to the wrong place. Only a two-tab test (start a drag,
-  inject a remote write via `curl`, continue, release) shows it; check
-  the saved path's coordinates, not just that it saved.
-- **Multi-voice headroom is a distinct claim from single/two-voice liveness
-  and needs its own audio-domain check.** Every earlier analyser-splice check
-  on Drift (liveness, chord mixing, glissando pitch tracking, filter-sweep
-  audibility) used at most a two-note chord — none had ever driven the
-  instrument to its actual maximum simultaneous-voice count. On a sixth run
-  (2026-08-21, 106h-to-cutoff), held a real `mouse down` on pad 1 (genuine
-  gesture, resumes the context) then layered in the other seven pads via
-  synthetic `keydown` (safe once the context is already running — the
-  autoplay-gate caveat only applies to the *resuming* gesture, not
-  subsequent voices added after resume) to build the full 8-note chord Drift
-  can ever produce, and read `getFloatTimeDomainData` off the spliced
-  analyser: peak 0.85 with zero samples at the ≥0.999 clipping threshold —
-  the `DynamicsCompressor` in the signal chain (`main.ts`'s `ensureAudio`)
-  keeps real headroom even at maximum simultaneous load, confirmed by
-  measurement rather than assumed from the node existing. Also confirmed the
-  release side of the same scenario: releasing all 8 (real `mouse up` +
-  synthetic `keyup` ×7) dropped every pad's `.active` class immediately, and
-  the analyser read a genuinely decaying signal — 0.13 peak ~0.6s after
-  release (the 0.28s-delay/0.32-feedback echo tail still audible, expected)
-  falling to ~3.5e-17 (silence) by ~2s — no stuck voice, no leaked
-  oscillator continuing to render after every key was up. Console stayed
-  clean throughout. "Checked, confirmed correct," no code change. The
-  general lesson: for any instrument whose voices share a bus with limited
-  headroom (a compressor, a fixed-gain mixer), the audio-liveness technique
-  above only proves *a* signal exists — proving the design's actual ceiling
-  case (every voice at once) doesn't clip needs the same technique deliberately
-  pushed to that ceiling, not just to two voices for convenience.
+- stylelint-config-standard rejects BEM double-underscore class names
+  (`selector-class-pattern` wants plain kebab-case) and flags a lower-
+  specificity selector (e.g. bare `a`) that comes *after* a higher-specificity
+  one targeting overlapping elements (`no-descending-specificity`) — write
+  generic element rules before scoped/attribute-selector rules that touch the
+  same elements, not after.
+- Before trusting a commit message, run `git show --stat HEAD` (or check
+  `git status --short` immediately before committing). A `git add` with a
+  stale pathspec can silently stage far less than intended while the commit
+  message you'd already drafted describes the full intended diff — the
+  message and the diff can drift apart without any command erroring loudly.
+  Caught this once in `comp4020-crit1-bada` week 1
+  (`5fedd84` vs the corrective `bfd0d1c`); worth the extra `git show --stat`
+  every time from now on, not just when something feels off.
+- A visual layout that looks reasonable in the diff can still be wrong at the
+  marking viewport — a 2-column CSS grid gallery had an ugly reflow gap next
+  to a tall image that was only obvious from an actual `agent-browser`
+  screenshot at 1920×1080, not from reading the CSS. Always screenshot at
+  both marking viewports before calling a layout done, not just after
+  finishing all the CSS.
+- `agent-browser eval --stdin` accepts a multi-KB script via heredoc — piping
+  a whole minified library (e.g. `axe-core/axe.min.js`) followed by an
+  `(async () => { ...; return JSON.stringify(...); })()` IIFE is how to run a
+  real accessibility audit in an actual browser from the CLI, when the
+  library is too big for a plain `eval "<js>"` positional arg. `eval` awaits a
+  returned promise automatically.
+- axe-core's `color-contrast` rule can't resolve inside jsdom (no layout
+  engine) — it reports `incomplete`, never pass/fail, especially behind any
+  gradient/pattern background. An axe-in-jsdom test should assert zero
+  *violations*, not zero `incomplete`; verify contrast separately, either a
+  real-browser axe run (see the `agent-browser eval --stdin` trick above) or
+  by hand via the WCAG relative-luminance formula. Also sanity-check any such
+  harness against a deliberately broken fixture (missing `alt`, empty link)
+  before trusting a clean result on the real site — confirmed useful in
+  `comp4020-crit1-bada` week 1.
+- The `color-contrast` incomplete result isn't only a jsdom limitation — a
+  *real-browser* axe run also reports `incomplete` (not pass/fail) for text
+  positioned over a `<canvas>`/`<img>`, because axe can't sample a canvas's
+  drawn pixels as a "background colour" the way it can a flat CSS colour.
+  Same fix as the jsdom case: verify by hand instead of trusting the
+  incomplete flag either way. For text over an *animated* canvas
+  specifically, the useful hand-check isn't a static luminance formula on one
+  frame — it's sampling the actual drawn pixel at the text's exact position
+  across the full animation (`ctx.getImageData` inside a
+  `requestAnimationFrame` loop via `agent-browser eval --stdin`, run for a
+  few seconds to cover the animation's periods) and computing WCAG contrast
+  against the worst pixel actually seen, not the worst pixel a quick mental
+  estimate assumes. Confirmed in `comp4020-crit4-bada` week 7: a manual
+  full-alpha estimate suggested the idle-glow animation could dip hint-text
+  contrast to ~3.9:1 (below AA) if the glow's radial gradient ever passed
+  fully behind the hint's overlay position, but 361-frame samples at three
+  viewports (1280×577 default, 1920×1080, 390×844) never saw the glow reach
+  that pixel above background at all — worst measured ratio was 7.11:1, and
+  a corrected analytical pass (accounting for the gradient's actual radius
+  and alpha falloff at that specific distance) matched the empirical result.
+  A real, verified "no bug here" outcome, not a rubber stamp: the full-alpha
+  assumption was a genuine plausible failure mode had the glow's geometry
+  been different, and only pixel sampling (not axe, not a spec test)
+  distinguishes a real dip from a hypothetical one.
+- A prior run's memory claiming work is "not yet pushed" can be stale — one
+  run in `comp4020-crit1-bada` recorded that note, but the next run's
+  `git fetch` + `git status` showed `origin/main` already matched `HEAD`
+  exactly. `git status`'s "up to date" line only reflects the locally cached
+  `refs/remotes/origin/*`, which doesn't update without a fetch — always
+  `git fetch` before trusting any claim (including your own memory's) about
+  what has or hasn't been pushed.
+- Doctrine says a reflection is headed with the course source's *title*,
+  never a week number, since week counts drift but the title doesn't — but
+  `reflections/crit-1.md` sat headed "Week 1: the forgotten web" through
+  several verification-only runs before one actually re-read the doctrine
+  line against the file instead of just checking it existed and cited real
+  commits. `pnpm check:evidence` only checks the filename and that citations
+  resolve — it does not check the heading text, so this class of drift is
+  invisible to the automated sensor and only catchable by re-reading the
+  doctrine text against the file by hand. Fixed in `comp4020-crit1-bada`
+  week 1 (`368d730`). Worth doing once per deliverable: re-read the doctrine's
+  reflection rules against the actual reflection file, not just confirm the
+  check passes — a repeated "screenshot + pnpm check" verification loop can
+  run green for many cycles while missing a plain-text doctrine violation the
+  tooling was never built to catch.
+- Wiring a real Lighthouse check (`lighthouse` + `chrome-launcher` npm
+  packages, serving `dist/` with vite's own `preview()` API): `chrome-launcher`
+  auto-detects a system Chrome on Linux by running `which` for
+  `google-chrome-stable`/`google-chrome`/`chromium-browser`/`chromium`, which
+  GitHub's `ubuntu-latest` runner has preinstalled — no extra CI setup needed.
+  This sandbox has no system Chrome, only `agent-browser`'s downloaded copy at
+  `~/.agent-browser/browsers/chrome-*/chrome`; pass that as `chromePath` (or
+  via `CHROME_PATH` env, which `chrome-launcher` also reads) for a local run,
+  leave it unset for CI. Confirmed in `comp4020-crit1-bada` week 1: the first
+  real run of the sensor failed on real SEO gaps (missing meta description,
+  and — subtler — vite preview's SPA-style fallback answering a `/robots.txt`
+  request with the `index.html` body, which Lighthouse then tried and failed
+  to parse as robots syntax line by line). That before/after failure was
+  itself the sanity-check that the sensor isn't a rubber stamp, cheaper than
+  building a separate deliberately-broken fixture.
+- A live re-render that does `element.innerHTML = "<template string>"` on a
+  container silently deletes any static children that container held before
+  — including a `<title>`/`<desc>` an `aria-labelledby` elsewhere points at.
+  jsdom-based spec tests didn't catch this (they mount a bare fixture, not the
+  real `index.html`), only a real-browser axe-core audit against the actual
+  page did (`svg-img-alt` violation, "aria-labelledby references elements
+  that do not exist"). Fixed in `comp4020-ass1-bada` week 4 (`9a95b1a`) by
+  re-emitting the title/desc inside the template string on every render, and
+  added a jsdom regression test asserting they survive a render — but the
+  bug itself was only findable by running axe against the live DOM, not by
+  reading the diff. Worth checking any `innerHTML =` on a long-lived element
+  for referenced children before trusting a static a11y annotation on it.
+- A repo can be provisioned late enough that the normal week-long clock never
+  applies — `comp4020-crit2-bada` opened with ~30 minutes of wall clock left
+  before the crit itself, not 168 hours. What held up under that compression:
+  picking a real target fast (a couple of `WebFetch` passes, not a deep
+  crawl), building the smallest honest version of the brief rather than an
+  ambitious one, running the check suite exactly once at the end rather than
+  iteratively, and writing PROCESS.md/reflection content that names the one
+  real judgement call made (here: refusing to fabricate opening hours two
+  real sub-pages 404'd on) rather than padding out several. Confirmed in
+  `comp4020-crit2-bada` week 3.
+- This `agent-browser` build has no bandwidth/latency throttle (`network
+  --help` only lists `route --abort`/`--body`, `har`, and request listing —
+  no `emulate`/`throttle`/CDP network-conditions command). The working proxy
+  for "what does a slow connection see" is `agent-browser network route
+  "**/main.ts" --abort"` (swap the pattern for whatever script the page
+  defers on) then reload: whatever renders with the script permanently
+  blocked *is* what a slow connection sees for however long the real request
+  takes. Found a real bug this way in `comp4020-ass1-bada` week 4 (`c009c90`):
+  `<output>` elements and an interactive row/chart were blank/garbled
+  ("a -chunk context") until JS ran — fixed by giving the static HTML
+  defaults that match what the render function computes for the inputs' own
+  default attribute values, so first paint is already correct. A citation
+  check the same run showed the flip side of the same discipline: don't stop
+  at the paper's abstract when checking a specific claim against it — one
+  clause ("worse as more documents were added") wasn't abstract-supported but
+  was true in the paper's body, findable only with a further search past the
+  abstract text.
+- A green test suite can still be asserting the wrong contract: a spec test
+  in `comp4020-ass1-bada` was literally named "is symmetric around the
+  middle of the context" and passed reliably, but a web search on the cited
+  paper's actual figures (Liu et al. 2023) showed the real effect is
+  asymmetric — primacy (start) recall edges out recency (end) recall, not a
+  clean symmetric U. The test had encoded an unverified simplifying
+  assumption from the model's first draft as if it were a real invariant.
+  Fixed in `comp4020-ass1-bada` week 4 (`cdd57e9`) by changing the model to
+  match the source and replacing the test with one asserting the verified
+  asymmetry — a case where the correction was rewriting a test, not just
+  editing the implementation to keep passing it. Worth treating any test
+  whose name asserts a property of the *domain* (symmetric, monotonic,
+  linear, etc.), rather than a property of the code's own behaviour, as a
+  claim to verify against the real source before trusting it as a fixed
+  contract.
+- A page's own copy can describe an affordance that was never actually built
+  — same failure mode as the domain-property test above, but in prose instead
+  of a test name. `comp4020-ass1-bada`'s lede said "Drag it around" from the
+  very first commit; the only control was ever a range slider, never real
+  dragging, and it survived several later "interaction review" passes because
+  each one read the markup rather than trying to drag the thing. Only caught
+  by actually loading the live page in `agent-browser` and attempting the
+  literal action the copy promised. Fixed week 4 (`0dd2315`) by wiring real
+  pointer drag onto the row so the copy became true instead of editing the
+  copy down to match the weaker mechanic — worth treating any second-person
+  imperative in a page's own copy ("drag", "click", "type") as a claim to
+  physically test, not just proofread.
+- Self-review of your own prose is weaker than it looks once you've read the
+  file with full context loaded --- you already know why each line is there,
+  which makes it hard to see it as a first-time reader would. Spawning a
+  fresh subagent with *only* the passage in question plus the grading bar
+  text (no other page context, no history of prior edits) got a genuinely
+  different read in `comp4020-ass1-bada` week 4: it caught that a lede opened
+  on a definition before earning the reader's attention, and that the
+  sentence's one surprising clause was grammatically subordinate rather than
+  the main point --- the same failure mode a previous run had already fixed
+  elsewhere on the same page, invisible to self-review because self-review
+  keeps re-confirming what it already decided was fine. Don't skip
+  fact-checking the subagent's proposed rewrite before adopting it, though:
+  its rewrite claimed a mid-context fact "may as well not have been supplied
+  at all," and a web search on the actual cited paper (Liu et al. 2023)
+  showed this undersold the real finding (GPT-3.5-turbo scores *below* its
+  no-context baseline with the fact mid-context) rather than oversold it ---
+  lucky this time, but the check was still necessary before treating a
+  fluent-sounding claim as verified. Confirmed in `comp4020-ass1-bada` week 4
+  (`6c144dc`).
+- jsdom has no layout engine, so `getBoundingClientRect()` on any element
+  always returns zeros — a test for pointer-drag-to-nearest-element math
+  needs to stub `getBoundingClientRect` on each candidate element by hand
+  (return a fixed rect per index) rather than relying on real layout; test
+  the actual coordinate math as a separate pure function so most of the logic
+  is verifiable without any DOM at all. Also, plain jsdom (via the `JSDOM`
+  import, not the `jsdom` vitest environment) has no global `PointerEvent`
+  constructor — construct via `doc.defaultView.PointerEvent` (falling back to
+  `MouseEvent`) and set `pointerId` with `Object.defineProperty` if the
+  fallback doesn't carry one. Confirmed in `comp4020-ass1-bada` week 4
+  (`0dd2315`).
+- A subagent's proposed prose rewrite can read as strictly better while
+  silently dropping a live-bound element it wasn't told mattered. A blind
+  fresh-eyes reviewer in `comp4020-ass1-bada` week 4 proposed a figcaption
+  rewrite that improved the prose but deleted the `<output>` element bound to
+  a length slider, which would have quietly killed a working live-update
+  mechanic — caught by grepping `main.ts` for the element's id
+  (`length-value-2`) before accepting the text, not by reading the HTML diff
+  alone, since the surrounding markup still looked plausible on its own.
+  Adapted the rewrite to keep the binding rather than taking it verbatim.
+  Worth checking any subagent-proposed markup change for `id`/`for`
+  attributes referenced elsewhere before adopting it, same discipline as
+  fact-checking a subagent's prose claim against its source (`deb8dd4`).
+- The blind-fresh-eyes-subagent technique (give it only the artefact plus the
+  grading bar, no conversation history) generalises past prose to interaction
+  *logic*: pointed at `comp4020-ass1-bada`'s explainer with the actual spec
+  bullets, it found that stretching a context length left the fact's raw
+  array index untouched, so a fact pinned at "the end" of a short context
+  silently drifted toward "the middle" of a longer one — the opposite of what
+  the page's own copy promised ("stretch the context without moving the fact
+  at all"). Confirmed empirically in a real browser before trusting the
+  report (`agent-browser eval` toggling the sliders and reading the output
+  text), then fixed by rescaling position proportionally on length change.
+  Fixing it surfaced a second, general HTML gotcha worth keeping outside any
+  one project: an `<input type="range">` clamps an assigned `.value` to its
+  *current* `.max` at assignment time, so code that widens the range and
+  moves the value in the same handler must set `.max` first — setting value
+  first silently clamps it back to the old range with no error. Confirmed in
+  `comp4020-ass1-bada` week 4 (`2b174bc`).
+- A drag/click surface's coordinate *math* being correct doesn't mean the
+  surface is correct — the pointer-drag row in `comp4020-ass1-bada` had fixed-
+  width flex children with no `flex-grow`, so the visible bordered box was
+  mostly empty at low item counts (89% dead space at the minimum setting) and
+  any click there silently snapped to the last item instead of responding
+  proportionally. `indexOfNearestCenter` was never wrong; the DOM just didn't
+  fill the container it looked like it should. Only found by comparing
+  `getBoundingClientRect()` of the last child against the container at more
+  than one item count (`agent-browser eval`), not by reading the CSS or
+  screenshotting only the default state — the ratio only looks obviously
+  broken away from the default. Fixed with `flex: 1 1 0` on the children
+  (`3fc1f1d`). General check: for any container a user clicks/drags across
+  proportionally, measure filled-extent vs. container-extent at more than one
+  configuration before trusting the interaction.
+- A further variant of the blind-fresh-eyes-subagent technique: point it at a
+  brief's own cited exemplar quote, not just the grading-bar text, when the
+  brief names a specific standard for what "good" looks like. Assignment 1's
+  brief calls Ciechanowski's *Mechanical Watch* the genre's ceiling because
+  "every part is manipulable and the explanation *is* the interaction" — given
+  only `comp4020-ass1-bada`'s page text plus that quote, a blind subagent
+  found the lede pre-stated the entire finding the interactive section was
+  supposed to teach, so the interaction was purely confirmatory, never
+  load-bearing. Fixed with a copy-only edit (moved the explicit claim past the
+  interactive section, left the lede as a hook), no interaction/scope change
+  (`8f12b20`, `comp4020-ass1-bada` week 4). Worth trying on any future
+  deliverable whose brief names a specific ceiling exemplar with a stated
+  reason it's the ceiling — that reason is a checkable claim about your own
+  page, not just flavour text.
+- When a spec caps `PROCESS.md` at three or four moments and separately asks
+  for a reflection breakthrough, a strong late-arriving finding doesn't have
+  to displace one of the capped moments — it can carry its full weight in the
+  reflection instead, if the existing moments are each a distinct failure
+  mode and the new one would either duplicate one (two "copy" moments here)
+  or leave no clearly-weakest one to cut. `comp4020-ass1-bada`'s four
+  PROCESS.md moments (a11y bug, slow-connection defaults, domain-property
+  test, copy-vs-build mismatch) stayed untouched at the assignment-1
+  finishing pass; the lede-catch (`8f12b20`) became the reflection's
+  breakthrough instead, since it's also the one finding driven by checking
+  the brief's own language rather than a testing technique — a genuine fit
+  for "response to the brief" as well as "process." Confirmed
+  `comp4020-ass1-bada` week 4 (`8e7c202`). Worth revisiting explicitly at the
+  finishing pass with the full candidate set in view, not deciding early or
+  by default.
+- For any deliverable whose own judging method is "try it cold, then talk"
+  (an instrument crit's pod plays before anyone explains it — see the
+  crit-4 source body), doing that same cold-open pass yourself before
+  adding anything finds real, specific gaps that speculative feature
+  brainstorming doesn't. `comp4020-crit4-bada` week 5 did this twice: run 2
+  opened the page silently and found the only pre-interaction affordance
+  was hint text, nothing visual moved (fixed with an idle glow, `de810ef`);
+  run 3 did the same open-cold-and-play pass again and found pointer input
+  had three expressive dimensions (pitch, brightness, speed-vibrato) while
+  keyboard input had exactly one (pitch only, chords included) — a real
+  asymmetry invisible from reading the code, only found by actually
+  chording the home row and noticing every note landed at the same fixed
+  brightness (fixed with a live arrow-key brightness sweep, `58dfda4`).
+  Both fixes closed a genuine gap the brief's own bar names ("two players
+  sound different," "playable with whatever is at hand") rather than
+  adding a feature for its own sake — worth repeating this cold-open check
+  at the start of every deepen run on this kind of deliverable, not just
+  once.
+- A third pass of that same cold-open check on `comp4020-crit4-bada` (run 4,
+  week 5, `5d92c29`) found a different bug shape: a canvas redraw that only
+  ever applies a translucent fade (for a fading-trail effect) rather than a
+  hard clear, combined with an animation loop that permanently stops itself
+  on a one-way state flag (`interacted = true`), means whatever the loop's
+  last frame happened to be — here, an idle-glow blob mid-drift — freezes on
+  screen forever once the loop stops, because nothing else was ever going to
+  erase it. Confirmed with `ctx.getImageData` at the exact pixel (background
+  should read `[11,11,20]`; it read `[41,50,76]`, the glow's tint, both
+  before and stuck-around after a mouse-down/up) rather than eyeballing a
+  screenshot alone. The general check: any canvas code that (a) redraws via
+  a translucent overlay instead of a hard clear, and (b) has an animation
+  loop that can permanently stop itself on a state transition, needs an
+  explicit hard clear *at* that transition — the loop stopping is exactly
+  the moment nothing will ever finish fading the last frame out.
+- A fourth cold-open pass on `comp4020-crit4-bada` (run 5, week 6, `fc9eb47`)
+  found a bug the previous three didn't, because it wasn't found by clicking
+  and watching but by asking "what happens if I leave mid-note": any
+  `window`-scoped `keydown`/`keyup` pair for held-note state is vulnerable to
+  the browser never delivering the matching `keyup` when focus leaves the
+  window while the key is still physically down (alt-tab is the common real
+  case) — the note drones on, and if the handler also guards re-trigger with
+  something like `heldNotes.has(e.code)`, the player can't even restart that
+  note once focus returns, because the map still thinks it's held. No jsdom
+  jump needed to find this: dispatch a real `keydown`, monkeypatch (via
+  `agent-browser open --init-script`) whatever the "stop" primitive is (here
+  `OscillatorNode.prototype.stop`) to count calls, dispatch a plain
+  `window.dispatchEvent(new Event("blur"))` with no keyup, and check the stop
+  counter didn't move. The fix is a `window` `blur` listener that force-stops
+  and clears every held-key (and, defensively, held-pointer) voice — cheap,
+  and it's the only way a player can ever silence a stuck note short of
+  reloading. Worth checking any keyboard-driven interactive page (not just
+  instruments — games, drag tools, anything with a "held" state keyed by
+  `keydown`/`keyup` pairs) for a `blur` handler before assuming keyup alone
+  is enough.
+- An `og:image` link-preview card is a case where the doctrine's blanket
+  "commit images as AVIF" rule has a real, checkable exception: AVIF support
+  for social/chat link-preview thumbnails (Slack, X, LinkedIn, iMessage) is
+  inconsistent, so an og:image card is safer shipped as PNG/JPEG even though
+  it's a committed image well under the 2560px/5MB guidance. Applied in
+  `comp4020-crit4-bada` week 6 (`9b4fe3a`) replacing a template placeholder
+  card.png with a real one composed (ImageMagick `convert`, DejaVu-Sans-Bold
+  for text) from an actual `agent-browser screenshot` of the instrument mid-
+  play, rather than reaching for a generic asset — the same "use the real
+  artefact, not a stand-in" instinct as the mid-context-fact tests elsewhere
+  in this file. Worth checking any future `og:image`/link-preview asset
+  against this exception before defaulting to AVIF.
+- `agent/` in a deliverable repo really is harness-owned, and not just by
+  convention — editing `agent/MEMORY.md`/`agent/now.md` directly (instead of
+  the outer `memory/` files this repo's `CLAUDE.md` and the doctrine actually
+  point at) gets silently reverted. A run in `comp4020-crit4-bada` week 6
+  wrote a real finding straight into `agent/MEMORY.md`/`agent/now.md` in the
+  repo (commit `1a8fb22`) without also updating the outer `memory/` files.
+  The very next "memory: tick" commit (`3501a88`) overwrote both `agent/`
+  files back to the *outer* memory's (unchanged, stale) content — the tick
+  process syncs outer→repo, so any edit made only in the repo copy has a
+  half-life of one tick. The lesson `1a8fb22` tried to record (a `now.md`
+  hand-off can be stale even sitting at `HEAD`) was itself erased this way,
+  and had to be reconstructed from `git show <commit> -- agent/MEMORY.md` on
+  a commit that no longer matched the working tree. Always write to the
+  outer `memory/now.md` and `memory/MEMORY.md` (`/home/ben/projects/comp4020
+  /agents/bada/memory/` — one level up from any deliverable repo), never to
+  a repo's own `agent/` copy, and diff the outer files against `agent/` at
+  the start of a run if something in `agent/` looks newer than what was just
+  read — that's the sync running backwards, not forwards.
+- A lowpass filter's audible effect should be measured by spectral centroid
+  (harmonic-amplitude-weighted mean frequency), not RMS — RMS is dominated by
+  the fundamental (the loudest partial), so a filter that meaningfully
+  reshapes the harmonics above it can leave RMS nearly unchanged even when
+  the timbre change is real. This is a step beyond the earlier sine-vs-filter
+  finding in this file (a *sine* has no harmonics to filter at all): here the
+  oscillator already had real harmonic content (a triangle wave), yet an
+  RMS-based check would have called the brightness control "basically fine"
+  while a centroid measurement showed under 4% shift even at the best note —
+  inaudible in practice. Also generalises the earlier fix's other half: don't
+  size a filter's cutoff range as one fixed Hz band shared across a
+  multi-octave scale — a low note's own harmonics already sit close together
+  in Hz, so a fixed range barely reaches past them, while the same range
+  barely touches a high note's much more widely (in Hz) spaced harmonics
+  either, for the opposite reason. Fix is filter *keytracking*: cutoff =
+  note frequency × ratio, so the same brightness fraction sweeps the same
+  proportional harmonic content regardless of pitch — measured to bring
+  every note in the scale to a consistent ~110% centroid shift, versus <4%
+  with a fixed range. `BiquadFilterNode.getFrequencyResponse()` at each
+  harmonic (weighted by the oscillator's own theoretical harmonic series —
+  triangle: odd only, 1/n²; sawtooth: all, 1/n) computes this centroid
+  without any real audio output, so it works in this headless sandbox same
+  as the original filter-response check. Fixed in `comp4020-crit4-bada`
+  week 6 (`981b2f9`), also switching triangle→sawtooth since a sawtooth's
+  slower harmonic falloff gives the filter more to act on. Confirmed live in
+  `agent-browser` too: traced the real `BiquadFilterNode.frequency` value at
+  four corners of the pad (low/high pitch × dark/bright) and the ratio to
+  the note's own fundamental stayed consistent (~1.5–14×) across all four,
+  where the coordinates actually landed inside the canvas's own
+  `getBoundingClientRect()` — a first pass at this got nonsense-looking
+  identical readings back because the test coordinates (`y=100`) landed
+  above the canvas, in the page's header, not on the pad at all; always
+  check the canvas's real bounding rect before trusting synthetic
+  coordinates as "on the pad."
+- A spawned subagent with genuinely no source-code access (only the live
+  rendered page via `agent-browser` and the brief's own spec bullets) playing
+  an instrument cold is a stronger check than the agent's own cold-open pass,
+  because the model that wrote the code can't help pattern-matching on what
+  it already knows the hint/aria-label say. Given only "here's a URL, you've
+  never seen this, play it," a blind subagent in `comp4020-crit4-bada` week 6
+  tried Q/W/E first (no feedback at all — no dot, no hint change) and
+  concluded keyboard didn't work, because the visible hint text said "press a
+  key to play" without ever saying which key; the actual keys (A–L) were
+  named only in the canvas's `aria-label`, invisible to a sighted player. Not
+  a functional bug — mouse/touch worked immediately — but a real gap against
+  "an uninstructed stranger can begin playing" for anyone who tries keyboard
+  first. Fixed by putting the same key names already in the aria-label into
+  the visible hint text too (`f2e2185`). General check: when a page's
+  aria-label names a control's actual affordance (specific keys, specific
+  gesture) that the visible copy only gestures at vaguely, that's a
+  discoverability gap for sighted users, not just a missed a11y nicety in
+  reverse — worth surfacing the same specifics in both places.
+- A fifth cold-open pass on `comp4020-crit4-bada` (run 6, week 6, `be24405`)
+  found a bug distinct from the earlier "one-way stopping transition leaves
+  the last frame stuck" bug in this file: here there was no continuous
+  animation loop driving the trail/glow at all while playing — every
+  fade+redraw happened synchronously inside the pointermove/keydown handlers
+  themselves, so a released note's dot only ever faded on the *next*
+  unrelated input event, anywhere on the pad. A player who stopped got a
+  frozen, stale-looking pad instead of watching the sound decay, confirmed
+  with `getImageData` on the exact drawn pixel: bit-identical across a
+  multi-second idle gap, then dimming only the instant some other key was
+  pressed elsewhere. Any canvas effect meant to read as "fading/decaying
+  over time" (trails, glows, particle effects) needs its own
+  `requestAnimationFrame` loop independent of input event cadence — a
+  per-event fade is really "fades one step per *other* action," which looks
+  identical to "never fades" whenever the player goes idle. The general
+  cold-open lesson holds again too: found by leaving a note playing and
+  doing nothing, not by reading the code.
+- A sixth cold-open pass on `comp4020-crit4-bada` (run 12, week 7) — same
+  blind-subagent, source-inaccessible protocol as the five before it,
+  covering mouse/keyboard/touch, chording, held-note decay, blur-mid-note,
+  three viewports, and console-mash — came back clean for the first time.
+  This is the expected end-state of repeated adversarial testing, not a sign
+  the technique stopped working: five real bugs across five prior passes,
+  each fixed, then a sixth pass that finds nothing is what "the fixes are
+  holding up" looks like. Don't force a seventh identical pass on a future
+  run just to keep the streak going if time is better spent on finishing-run
+  prep (rereading `PROCESS.md`/`reflections/README.md`, drafting reflection
+  language) — a clean cold-open result is legitimate evidence, not grounds
+  for suspicion that the test wasn't thorough enough.
+- After a clean cold-open pass, the productive next angle was a code-level
+  edge case rather than another play session: `comp4020-crit4-bada`'s
+  pointerdown handler did `pointerVoices.set(e.pointerId, startVoice(...))`
+  unconditionally, with no check for an existing entry. A real mouse's
+  pointerId is always `1` for the whole device, and pressing a *second*
+  mouse button while the first is still held fires another `pointerdown` for
+  that same pointerId with no `pointerup` in between (confirmed by
+  dispatching two synthetic `pointerdown`s then one `pointerup` on
+  `pointerId: 1`) — so the map overwrite orphaned the first voice's
+  oscillator and LFO, which then droned forever with no way to stop them
+  (the map only ever pointed at the newest voice). Same
+  monkeypatched-`OscillatorNode`-counter technique as the blur-mid-note fix
+  elsewhere in this file, applied to a different trigger: 4 `.start()` calls
+  against only 2 `.stop()` calls before the fix, 4 against 4 after. Fixed by
+  stopping any existing voice for that pointerId before starting the new one
+  (`6e3e321`, run 13, week 7). General check: any `Map.set(key, ...)` keyed
+  by an id a real device can reuse across overlapping "sessions" (a pointer
+  id, a touch id) needs to check for and clean up an existing entry first,
+  the same discipline `e.repeat || keyVoices.has(e.code)` already applied on
+  the keyboard side of this same file — the pointer side was the one path
+  that had never been checked for the analogous case.
+- The template's `pnpm check:evidence` (`scripts/check-evidence.ts`) checks
+  a narrower thing than "the citation is correct": it extracts each cited
+  commit hash from `PROCESS.md` by regex on the bracket text alone —
+  `[`<sha>`](...)` — and verifies the SHA resolves locally with
+  `git cat-file -e`. It never reads or validates the URL inside the
+  parentheses at all, so a citation whose link points at the wrong org, the
+  wrong repo, or a typo'd path still prints a clean
+  `✓ PROCESS.md: N cited commit(s) all resolve`. Confirmed by reading the
+  script directly in `comp4020-crit4-bada` week 7 while writing the
+  finishing-run `PROCESS.md`. Same shape as the reflection-heading-vs-check
+  gap found in `comp4020-crit1-bada` week 1 (elsewhere in this file): the
+  automated sensor verifies a narrower, mechanical proxy for the
+  requirement, not the requirement itself. On any deliverable using this
+  template, hand-check `PROCESS.md`'s citation URLs against `git remote -v`'s
+  actual org/repo before shipping — a green `check:evidence` is not evidence
+  the links themselves resolve to the right place on GitHub.
+- For a reflex/timing game whose only mechanic is a single input (a jump, a
+  dodge), "is there a real skill ceiling" is checkable from this CLI without
+  a human pod: script `agent-browser press <key>` on a fixed short interval
+  (faster than a human could deliberately time) for many seconds and read
+  back a game-state hook (here, an `aria-live` status element's text) rather
+  than eyeballing a screenshot. If constant mashing never loses, the
+  "difficulty ramp" is decorative and the game can't actually be lost by a
+  player paying attention, only by one who stops playing — a real design
+  flaw, not just a hard-to-verify claim. Confirmed doing this on
+  `comp4020-crit5-bada`'s runner (build run, week 6): 18s of
+  press-every-150ms mashing still produced multiple deaths and restarts
+  (best score crept up rather than never arriving), verifying the
+  speed/spawn ramp genuinely defeats pure-spam play rather than assuming it
+  from reading the ramp constants. Generalises the brief's own framing for
+  this deliverable ("a collision ends the round can be tested, but only
+  playing can tell you whether it feels fair") — scripted rapid input is a
+  way to *play* it adversarially from a CLI, a middle ground between a unit
+  test and a human pod.
+- Following the earlier corrupted-cold-open lesson in this file exactly
+  (finish any main-thread `agent-browser` use and close the browser *before*
+  launching a background blind-playtest subagent, don't touch the browser
+  again until it reports back) produced a genuinely reliable report on a
+  second attempt, `comp4020-crit5-bada` week 6 (`87c077d`). The isolated
+  subagent's claims were checkable and mostly true this time (fair-feeling
+  collisions, clean restarts, working mobile viewport) except one flagged-as-
+  unconfirmed anomaly it explicitly declined to assert as a real bug — a
+  sign of a well-calibrated report, not a rubber stamp. Its one confirmed,
+  reproducible finding: the `#status` `aria-live` element is written only on
+  death (`endRun()`) and nothing ever clears it going the other way, so a
+  screen-reader user restarting after a loss keeps hearing the previous run's
+  final score long after the visible canvas score has reset to 0 and climbed
+  past it. Reproduced by hand (`agent-browser eval` reading
+  `#status.textContent` immediately after a death, then again immediately
+  after the restart press, across two independent death/restart cycles) and
+  fixed with one line clearing `status.textContent` in `resetToIdle()`.
+  General check, generalising the `distance`-not-reset bug fixed the previous
+  run: any one-way state write that only fires on entering a state (a status
+  announcement, a "you died" flag, a persisted high score) needs an explicit
+  clear or reset on the *reverse* transition, checked by driving both
+  directions of the transition and reading the same hook each time, not just
+  the direction that's easy to trigger once.
+- A "no instructions, teaches itself" brief has a checkable test for whether
+  a proposed *new* mechanic is safe to add, not just a vibe call: can a
+  stranger who dies against it plausibly guess the input from the death
+  alone, the same way they guessed the first mechanic? On
+  `comp4020-crit5-bada` (week 6), adding a Chrome-Dino-style duck mechanic
+  (an overhead obstacle only passable by crouching, made uncounterable by
+  jumping by keeping the player's rect overlapping it through the whole jump
+  arc, not just at apex) was mechanically buildable, but there's no way to
+  design a death against it that teaches "hold ArrowDown" the way the
+  existing single mechanic teaches itself — every input that currently
+  matters (Space/ArrowUp/Enter/click/tap) is the *same* one a stranger tries
+  within seconds of landing on the page. Decided against building it for
+  that reason, not from generic scope-creep caution. General check for any
+  future "should this game have a second mechanic" call on a no-tutorial
+  brief: a second mechanic only clears the bar if a death against it can be
+  attributed, by the player, to the *specific new input* needed — not just
+  "something else must have been possible."
+- "Only playing can tell you whether the collision feels fair" doesn't
+  require a live human/browser pod every time — a faithful Node
+  reimplementation of the exact collision function plus the exact physics
+  constants, driven against the worst-case parameters the real code can
+  generate, is a legitimate way to answer a specific fairness question the
+  same technique already used for the `BiquadFilterNode.getFrequencyResponse`
+  brightness-filter check elsewhere in this file, applied to jump timing
+  instead of audio. On `comp4020-crit5-bada` (week 6), simulating a
+  back-to-back obstacle pair at the coded minimum gap and max height found
+  that a naive "clear both with one jump" strategy has a genuinely
+  frame-perfect window (~5.5ms, under one real frame) right at its
+  speed-threshold of first becoming possible — which would be a real
+  fairness bug if it were the only path — but the "land, then immediately
+  rejump" fallback stays comfortable (246–550ms) at every speed the game
+  reaches, so the scenario is fair in practice. Worth reaching for this
+  method before scripting live wall-clock-dependent browser input timing
+  (fiddly, and vulnerable to the separate main-thread/subagent
+  `agent-browser` cross-talk issue above) whenever the fairness question is
+  really about deterministic physics/collision math and the source
+  constants are known — reserve live pod/subagent testing for questions a
+  simulation genuinely can't answer (does it *feel* right, is the input
+  discoverable, does a real device deliver events the sim assumes).
+- After two consecutive clean cold-open passes on `comp4020-crit5-bada` (see
+  the run-12-equivalent lesson above), the productive next angle wasn't an
+  eighth identical playtest but a different question: does the game's own
+  global input handler interfere with the *rest of the page*, not just the
+  game surface? A `window`-scoped `keydown` listener that intercepts
+  Space/ArrowUp/Enter unconditionally (so mouse/keyboard work anywhere
+  without first clicking the canvas) also fires when a completely unrelated
+  focusable element — here, the page's own `<a href="./">Home</a>` nav
+  link — has focus, and `preventDefault()`s before the browser's native
+  Enter-activates-a-focused-link behaviour can run. Confirmed with
+  `agent-browser`: tab to the link, set a `window.__marker`, press Enter —
+  the marker survived (no real navigation happened) and `#status` showed a
+  just-finished run, proving the keypress was swallowed by the game instead
+  of activating the link. Fixed by gating the handler on
+  `document.activeElement` being the canvas or `document.body` only
+  (`37d5530`), re-verified the same way (marker now correctly cleared by a
+  real navigation, and confirmed body/canvas focus still trigger the game
+  as before). General check: any page-wide keydown listener installed for
+  "works without clicking anything first" convenience needs an explicit
+  check that it isn't shadowing the native keyboard semantics of *other*
+  focusable elements already on the page (nav links, buttons) — a cold-open
+  playtest of the game itself won't surface this, since it never tabs
+  anywhere except into the game.
+- A resize handler that recomputes one piece of live layout state (here,
+  `groundY` from `height`) is an easy place to miss a *different* piece of
+  state that's stored absolute rather than derived — `comp4020-crit5-bada`'s
+  `resize()` (week 6/7) recomputed the player's y and, via a live
+  width-fraction in `playerRect()`, the player's x every frame, but
+  in-flight `Obstacle.x` values were set once at spawn and never touched by
+  `resize()` at all. A width change moved the player instantly while every
+  obstacle stayed exactly where it was, turning a mid-run browser resize
+  into a free pass through an obstacle that would otherwise have hit, or an
+  unearned death from one that wouldn't have. Fixed by capturing `oldWidth`
+  before reassigning `width` and multiplying every obstacle's `x` by
+  `width / oldWidth` when not idle (`096fb2a`). General check: for any
+  layout-driven object whose position is a mix of "recomputed live from a
+  dimension" (the player, here) and "set once and left absolute" (the
+  obstacles), a resize handler needs to explicitly migrate the absolute
+  ones by the same ratio, not just recompute the live ones — the two classes
+  don't automatically stay in relative sync just because both use the same
+  underlying `width`/`height`.
+- That same fix had a real false start worth the general lesson on its own:
+  a first resize test showed the player's traced x never changing across a
+  viewport change, which looked like proof the native `window` `resize`
+  event doesn't fire for `agent-browser set viewport`/CDP-driven viewport
+  overrides — plausible enough that a `ResizeObserver`-based replacement got
+  written and nearly shipped, comment and all, asserting this as
+  "confirmed." The real cause was mundane and had nothing to do with event
+  firing: `canvas { width: min(90vw, 720px) }` caps the canvas's actual
+  rendered width once viewport width crosses ~800px, and both test
+  viewports (the default, and 1400px) sat above that threshold, so the
+  canvas's `getBoundingClientRect().width` was 720px in both cases — no
+  resize of the *canvas* ever happened, native event or not. Caught by
+  redesigning the test with two viewports that both stay under the cap
+  (500px and 900px, giving genuinely different canvas widths of 450px and
+  630/720px), which showed the native listener firing and updating the
+  player's x correctly, disproving the theory before the wrong fix shipped;
+  reverted the `ResizeObserver` change and kept only the real fix. General
+  check: before trusting a "no effect observed" result from a resize/layout
+  test, verify the thing being measured (here, the canvas's own rendered
+  box) actually changed at all between the two conditions — a CSS
+  `min()`/`max()`/`clamp()` cap on the element under test can silently make
+  two different viewport values produce one identical rendered size, and a
+  clean null result from that setup proves nothing about the code being
+  tested.
+- A bug fixed and verified only by hand (a live `agent-browser` trace, a
+  screenshot, a manual arithmetic check) is still an untested regression
+  risk once the run ends — the next person to touch that code has no
+  automated signal if they break it again. Where the fix's core logic is a
+  pure calculation buried inside a DOM-coupled function (here, the ratio
+  math inside `resize()`), extracting it into a small named pure function
+  in the project's already-DOM-free logic module (`game-logic.ts`, next to
+  `rectsOverlap`) and adding a couple of unit tests costs very little and
+  converts a one-off manual verification into a permanent sensor. Applied
+  in `comp4020-crit5-bada` week 7 (`e5a6620`) to the resize-desync fix
+  (`096fb2a`, itself only traced by hand the run before): pulled
+  `rescaleObstacleX(x, oldWidth, newWidth)` out of `resize()`, three tests
+  added, 21→24 in the suite. Worth doing this as a default follow-up
+  whenever a deepen run's cold-open-playtest thread goes clean and a prior
+  run's fix is sitting on manual verification alone — better use of
+  remaining deepen time than forcing a repeat playtest past the
+  established two-clean-passes-and-stop bar. Not every fix extracts this
+  cleanly, though: a fix that's really about DOM state (an aria-live
+  string, a visual affordance) doesn't have a pure-function core to pull
+  out, and forcing one would just be testing implementation rather than
+  the contract — that class is still better checked live.
+- Following the earlier "a second mechanic only clears the no-tutorial bar
+  if a death against it is attributable to a specific new input" rule in
+  this file (the duck-mechanic rejection), the fix isn't always "don't add
+  a second mechanic" — reusing the *same* input the first mechanic already
+  uses sidesteps the whole problem. `comp4020-crit5-bada` week 7 (`1e497aa`)
+  added a double jump gated by a pure `tryJump(jumpsUsed, maxJumps)`: a
+  death against a tall (only-clearable-with-two-jumps) obstacle is still
+  attributable to "I didn't jump enough," the same feedback shape as the
+  base mechanic, because there's no new key to miss. Verified fair in two
+  stages before ever playtesting: an out-of-browser Node simulation of the
+  exact gravity/velocity constants found a 500ms+ non-frame-perfect window
+  between the two presses, then a live trace of the actual bundled build
+  (monkeypatching `CanvasRenderingContext2D.prototype.translate` via
+  `--init-script`, since `draw()` calls it once per frame with the
+  player's exact center) confirmed the shipped code produces the identical
+  apex heights the simulation predicted (125px single, 229px double) —
+  closing the gap between "the math says it's fair" and "the shipped code
+  behaves that way," same discipline as the `getFrequencyResponse`
+  brightness-filter and back-to-back-obstacle checks elsewhere in this
+  file. The isolated blind-playtest that followed surfaced a genuine, non-
+  obvious nuance worth expecting on *any* secondary mechanic added to a
+  no-tutorial game: the subagent's initial strategy was one deliberate,
+  well-timed press per obstacle, which reliably died against every tall
+  obstacle and did not lead it to try a second press on its own — it only
+  found the double jump by mashing the button out of frustration after
+  repeated deaths. This is still a genuine pass, not a discoverability bug:
+  a 500ms+ window makes mashing a robust, near-inevitable discovery path,
+  and "you get it by dying and experimenting, not by nailing it on the
+  first guess" is Bushnell's "easy to learn, difficult to master," not a
+  defect — resist the urge to patch this with a visual hint, which would
+  undercut the same no-tutorial rule the mechanic was designed to respect
+  in the first place. Worth checking any future secondary-mechanic
+  playtest for *how* it was discovered (deliberate first guess vs.
+  experimentation-after-failure), not just *whether* it was discovered —
+  the two have different implications for whether a hint is warranted.
+- Not every apparent fairness risk in a difficulty-ramping game is a bug —
+  simulate before assuming a floor/ceiling fix is needed. On
+  `comp4020-crit5-bada` (week 6/7) the question was whether a tall
+  obstacle's speed-scaled arrival time could ever outrun even a
+  frame-perfect double jump, given an uncapped `SPEED_RAMP` that grows
+  every frame with no maximum. A Node simulation of the exact jump physics
+  plus the exact spawn-to-player travel-time formula showed reaction time
+  does shrink below what a frame-perfect double jump needs — but only
+  after ~114s of continuous survival (score in the low thousands), and
+  concluded this is intentional, unbounded escalating difficulty, the same
+  shape as Chrome's Dino game: the ceiling is *supposed* to eventually
+  outrun any player, that's Bushnell's-law "difficult to master," not a
+  fairness defect, and it doesn't touch a "stranger finishes inside five
+  minutes" bar since that bar is about losing fast on an early attempt,
+  not surviving five continuous minutes. No code change made — a genuine
+  checked-and-clean outcome, distinguishable from a rubber stamp because
+  the same simulation could instead have found the impossibility point
+  inside the first 5–10 seconds, which would have been a real bug. General
+  check for any game whose difficulty scales with elapsed survival time
+  and has no explicit cap: before treating "does this mechanic ever become
+  unfair at high difficulty" as an open question needing a code fix,
+  simulate where the unfairness threshold actually falls and compare it
+  against what the brief's own bar requires (finishing fast vs. surviving
+  long) — an ever-increasing ceiling that a player will eventually lose to
+  is the genre working as intended, not a bug to cap away.
+- A weak colour distinction between two foreground game elements isn't
+  automatically a bug if a second, non-colour cue dominates — check which
+  cue actually carries the meaning before assuming CVD accessibility needs
+  a fix. `comp4020-crit5-bada` (week 6/7) draws tall vs. short obstacles in
+  `#2f5d8a` (blue) vs `#3a3a3a` (dark grey); computing WCAG contrast by hand
+  showed only 1.65:1 between the two in normal vision, dropping to
+  ~1.18–1.28:1 under a simulated deuteranopia/protanopia matrix (Machado et
+  al. 2009) — genuinely too weak to rely on as a colour cue for anyone.
+  But the two obstacle *heights* differ by 3–6× (145–165px tall vs. 26–54px
+  short) on the same canvas, and forcing a tall obstacle to appear (an
+  `--init-script` setting `Math.random = () => 0`, uncommitted, dev-server
+  only) then screenshotting at both marking viewports (1920×1080, 390×844)
+  confirmed the size difference reads as obviously different at a glance at
+  both — colour was never the load-bearing cue, so its weak contrast never
+  mattered. No code change made — a real checked-and-clean result, since
+  the same contrast computation could instead have shown the two colours
+  were also similar in *lightness* to each other and to the background
+  (which would have been a real bug regardless of the other cue). General
+  technique: WCAG contrast between two *foreground* colours (not just each
+  against the background) plus a CVD simulation matrix answers "does this
+  colour cue survive colour blindness" without ever opening a browser;
+  `Math.random = () => 0` (or any other fixed value) via `--init-script` is
+  a cheap way to force a specific rare game state (a tall spawn, a jackpot,
+  an edge-case branch) into being on-screen for a screenshot, when the
+  state depends on `Math.random()` internally and there's no exposed debug
+  hook to trigger it directly.
+- A background `Agent` task's completion notification with `status:
+  completed` but no `<result>` block is not a finished report — it means
+  the subagent stopped mid-task (in `comp4020-crit5-bada` week 6/7, a
+  blind-playtest subagent opened the page, took two screenshots, and
+  stopped after only 18.5s/5 tool calls, never pressing a key or clicking
+  anything). Don't reach for `TaskOutput` to dig the answer out of the raw
+  JSONL transcript in this situation — that transcript is meant to stay out
+  of context (per the tool's own warning) and reading it via `TaskOutput`
+  still dumps large raw JSON into context with no clean final-text field to
+  extract. The right move is `SendMessage` to the agent's id/name telling
+  it plainly what it skipped and to keep going — the resumed run's
+  eventual completion notification *did* carry a proper `<result>` block
+  with the actual report. General check: treat a `<result>`-less background
+  completion as "stopped early," not "done," and resume via `SendMessage`
+  rather than raw-transcript archaeology via `TaskOutput`.
+- After a run of resize checks that only ever varied *width* (the
+  `rescaleObstacleX` fix and its lessons above), the productive next axis
+  on `comp4020-crit5-bada` (week 6/7, `4c95a1b`) was the one nobody had
+  varied yet: window *height*. The canvas CSS was `height: min(60vh,
+  480px)`; at both marking viewports (1920×1080, 390×844) that resolves to
+  the same 480px canvas, so testing only those two — which the brief's own
+  "play at both marking viewports" line invites — could never have found
+  that a modest, non-maximised browser window (800×500, a plausible real
+  window size, not an exotic device) shrinks the canvas to 300px and clips
+  15–50px of the player off the top of the visible area during a
+  double-jump apex, traced with the same monkeypatched-`translate`
+  `--init-script` technique used elsewhere in this file. Collision math was
+  unaffected (physics runs in canvas-coordinate space regardless of what's
+  visibly drawn) — this was a "can the player see themselves" bug, not a
+  fairness one. Fixed with a CSS height floor (`clamp(400px, 60vh, 480px)`)
+  rather than touching any jump physics constant, specifically to avoid
+  disturbing the extensively simulation-verified fairness numbers already
+  established for those constants elsewhere in this file — re-traced at
+  five window heights post-fix (all positive clearance) and reconfirmed
+  both marking viewports unchanged at 480px. General check: when a fixed
+  set of marking viewports all happen to hit the same clamped/capped value
+  for some CSS dimension, that's a sign the *other* values that dimension
+  can take (a resized window between the caps) are untested territory, not
+  a reason to assume they're covered by proxy — and a state-bleed gotcha
+  hit while measuring this, consistent with other findings in this file:
+  reading a traced global via `agent-browser eval` without reloading the
+  page between measurements can carry over game phase (idle/running/over)
+  from a previous measurement's interactions, producing a plausible-looking
+  but wrong number (a single-jump apex read back when a double-jump was
+  intended) — always fresh-load the page immediately before each timed
+  measurement in a sequence, not just once at the start of the batch.
+- After the width/height resize axes were both closed, the next productive
+  angle on `comp4020-crit5-bada` (week 7, `04c362d`) wasn't another
+  playtest but a code-level question: which browser API calls in this file
+  could throw, and does anything catch it? `main.ts` touched `localStorage`
+  unguarded in two places (a module-top-level read building the initial
+  `best` value, and a write inside `endRun()`), and either throwing is a
+  real, non-exotic failure mode (Safari private browsing historically threw
+  on `setItem`; enterprise/privacy policies and some embedding contexts can
+  block `Storage` access entirely, including reads). Confirmed both with
+  `agent-browser --init-script`: `Storage.prototype.setItem = () => { throw
+  ... }` left the render loop permanently frozen after the next death (no
+  `requestAnimationFrame(loop)` reschedule since `loop()` itself threw, no
+  restart possible short of reloading) — verified by wrapping
+  `requestAnimationFrame` to count frames and watching the count go static
+  across repeated checks; `Object.defineProperty(window, "localStorage", {
+  get() { throw ... } })` killed the *entire* module before its first
+  `resize()`/`requestAnimationFrame(loop)` call ever ran — verified via
+  `canvas.getAttribute("width")` reading `null` and a captured `window`
+  `error` event, a strictly worse outcome (dead on arrival, not just
+  dead-after-first-death). Fixed by wrapping both accesses in try/catch,
+  graceful-degrading to "best just doesn't persist this session" rather
+  than "the whole game is unplayable." General technique: for any
+  browser-storage read/write not already guarded, this same
+  monkeypatch-to-throw-via-`--init-script` pattern (already used elsewhere
+  in this file for `AudioParam`/oscillator tracing) verifies whether a
+  storage failure is contained or takes the whole page down — worth
+  running once per deliverable that touches `localStorage`/`sessionStorage`
+  directly, since the failure is invisible in normal testing (storage works
+  fine in a default browser profile) and only shows up in a browsing mode
+  nobody defaults to.
+- A canvas draw call with no `fillStyle`/`strokeStyle` set immediately
+  before it inherits whatever the *previous* draw call left the context
+  in — normal `CanvasRenderingContext2D` semantics, not a bug in the API,
+  but an easy trap for any conditional/rare-branch draw that isn't inside
+  the same loop that sets colour per-iteration. On `comp4020-crit5-bada`
+  (run 18, week 6, `bd68e48`) the idle-screen's own affordance hint — a
+  small preview obstacle meant to signal "something's coming, get ready to
+  jump" before the player does anything, the literal mechanism for this
+  brief's one hard requirement ("the opening screen itself has to make the
+  first move obvious") — had been rendering completely invisible for the
+  entire life of the repo. `draw()` only sets `ctx.fillStyle` to the
+  obstacle colour inside `for (const o of obstacles) { ctx.fillStyle =
+  ...; ctx.fillRect(...) }`; on the idle screen `obstacles` is always `[]`,
+  so that loop never runs, and the idle-preview `fillRect` right after it
+  silently inherited the background fill colour set at the top of the same
+  function — drawing the "obstacle" in the exact colour of the background.
+  Seventeen prior runs' cold-open passes, screenshots, and even a
+  deliberate a11y/affordance review all missed it, because the *composed*
+  idle screen still looked fine (a real, correctly-visible pulsing glow
+  around the player sat right next to the invisible obstacle, so nothing
+  about the screenshot looked broken). Found only by going one level below
+  "does the screenshot look right" to "what does each individual draw call
+  actually draw": monkeypatching `CanvasRenderingContext2D.prototype.
+  fillRect` via `agent-browser --init-script` to log `this.fillStyle` on
+  every call showed the idle-preview call logging the background colour,
+  and a direct `getImageData` read at its exact drawn coordinates came
+  back flat background with no obstacle-shaped region — Fixed with one
+  explicit `ctx.fillStyle = ...` line right before the previously-bare
+  call. General check: for any canvas scene with more than one visible
+  element, don't stop at "the screenshot looks plausible" — trace or
+  sample the *specific* element you actually care about, especially any
+  element whose draw call sits outside the loop/branch that normally sets
+  colour for its category, since a scene can look entirely fine while one
+  specific element is drawing in a colour that makes it disappear.
+- An unescaped colon inside an unquoted YAML block-sequence string breaks
+  `astro check`'s frontmatter parsing with a cryptic "can not read an
+  implicit mapping pair; a colon is missed" pointing at the exact line/col —
+  the colon gets read as a new mapping key starting mid-string. Found in
+  `comp4020-ass2-bada` editing a `spec:` bullet to read "...one note per
+  critique domain: visual art, code, ..."; fixed by swapping the colon for
+  an em-dash (`---`), which also matches this template's house prose style
+  better than a colon would have anyway. Worth remembering as the specific
+  error signature to recognise, not just "check your YAML," since the
+  message doesn't mention frontmatter or Markdown at all.
+- A uniqueness/coherence test can be green while structurally unable to ever
+  fail, if the values it checks are unique by construction rather than by the
+  invariant it's meant to enforce. `comp4020-ass2-bada`'s
+  `course-coherence.test.ts` asserted "no two sessions share a `domain:`
+  frontmatter value" across all twelve sessions, but half of those twelve
+  values were just the session's own title (`revision`, `portfolio
+  check-in`, `receiving`...) restated as a domain — those can never collide
+  with anything by definition, so the test was really only checking the six
+  *real* critique-domain sessions, silently, while its assertion read as
+  covering all twelve. A blind fresh-eyes subagent given the site's content
+  plus the brief's own coherence bar caught this (among 7 other genuine
+  findings out of 8 total — the other was investigated and found to be a
+  false positive, per the standing fact-check-every-subagent-finding
+  practice elsewhere in this file). Fixed by removing the frontmatter key
+  entirely from the six non-domain weeks and asserting the *count* (`toBe(6)`)
+  alongside the uniqueness check, so the test now fails if a real domain
+  loses its key or a decorative one gains it. General check for any
+  "no duplicates" test: ask whether every value under test is drawn from the
+  same meaningful category, or whether some of them are unique for a reason
+  that has nothing to do with the property being enforced.
+- Auditing a `related:` content graph for "does this structure make sense"
+  is more than checking edges resolve (that's a mechanical link check) — it
+  means cross-referencing each node's own prose against its edges. On
+  `comp4020-ass2-bada`, two crit sessions' own body text explicitly named a
+  concept from a specific other week ("the same method [as week 3]," "care,"
+  a term a different week's lecture defines) with no `related:` edge
+  encoding that dependency, while sibling sessions making the identical kind
+  of claim (a domain crit citing the lecture whose theory it applies) did
+  have one. Found by dumping `dist/api/index.json`'s nodes and diffing which
+  ones had zero `related` entries against which of *those* nodes' bodies
+  contained a callback phrase to another week, not by eyeballing the graph
+  shape alone (24 nodes/24 edges looked plausible without this). Note the
+  field lives at the node's top level (`node.related`), not nested under
+  `node.meta` alongside the other frontmatter — worth checking a sample
+  node's actual JSON shape before writing a graph-traversal script against
+  assumed nesting.
+- A session's `spec:` frontmatter bullets can contradict its own `Bring`/`The
+  crit` prose even when each half reads fine in isolation --- worth a pass
+  that reads spec bullets *against* the body, not just against the brief.
+  `comp4020-ass2-bada` week 1's spec asked students to name "the worst note
+  you were ever given," but the Bring section explicitly instructs the
+  opposite framing ("Not the meanest one and the nicest one --- the one that
+  worked and the one that didn't"), sorting on efficacy, not severity ---
+  present unedited since the file's first commit (`c392993`). Fixed by
+  rewording the spec bullet to the worked/didn't-work axis the room actually
+  uses. Same run also caught a subtler version one level up: week 12's
+  "Leaves with" said the Final Project was "submitted" at the crit itself,
+  even though the assessment's own `due:` frontmatter is a week later — the
+  same "due the following Monday" pattern week 6 already states explicitly
+  for Assignment 1, just unstated (and so silently contradicted) in week 12's
+  copy. Caught by running actual day-of-week arithmetic (Python
+  `datetime.date.fromisoformat(...).strftime('%A')`) over every session date
+  and assessment `due:` date, not by eyeballing the dates as plausible ---
+  confirmed the due date itself was correct (a genuine "following Monday"),
+  narrowing the bug to the prose's tense/claim rather than the data. General
+  technique for any dated, multi-page content site: (1) diff every `spec:`
+  bullet against its own page's body for a claim the body explicitly rules
+  out or never earns, and (2) compute real day-of-week arithmetic on every
+  cited relative-date claim ("due the following Monday," "due same day")
+  instead of trusting the frontmatter dates are self-consistent by
+  inspection.
+- An assessment page using `marking.mode: weighted` auto-renders a "How it is
+  marked" table from the criteria/weight pairs in its own frontmatter
+  (`MarkingModel.astro`, part of the starter template) --- so hand-written
+  body prose explaining the same criteria must not restate the weight
+  percentages, only add qualitative meaning, or a marker hits the identical
+  numbers twice in the same scroll. `comp4020-ass2-bada`'s
+  `assignment-1.md` had a "## How it's marked" section spelling out
+  "Specificity (40%)" etc. right above the auto-rendered table doing the
+  same thing; fixed by retitling to "## What the criteria mean" and dropping
+  every inline percentage, keeping only the qualitative description
+  (`884aaff`). Confirmed via `git log --follow` that `MarkingModel.astro`
+  itself is original starter scaffolding, not something a past run wrote ---
+  worth checking provenance before assuming a duplicate-looking section was
+  authored deliberately. General check for this template: any assessment
+  with `mode: weighted` should have its body prose read as a *companion* to
+  the auto-table, not a paraphrase of it. The `mode: holistic` branch of the
+  same component has the identical failure mode in a sharper form: it
+  renders `marking.description` verbatim under its own auto "How it is
+  marked" heading, so a hand-written body section that *also* states the
+  marking basis isn't restating numbers, it's printing the exact same
+  string twice. `peer-review-exchange.md`'s "## How it's marked" section
+  was `marking.description` copied word for word into the body --- found
+  only by a real-browser screenshot at 1920x1080 (the two headings, "How
+  it's marked" and "How it is marked", read as plausible neighbours in the
+  markdown source; only the rendered page showed the paragraph twice).
+  Unlike the weighted case, holistic mode's manual section has no distinct
+  qualitative content to preserve once the frontmatter description already
+  says it all, so the fix was deletion, not a reword (`0512616`,
+  `comp4020-ass2-bada` week 1). Check both `mode`s, not just `weighted`,
+  when auditing an assessment for this pattern.
+- Leftover developer/scaffold instruction text can leak into a shipped page
+  through a custom `.astro`/`.mdx` page component, not just through markdown
+  content --- a class of bug the doctrine's content rules don't mention
+  because they're written for `src/content/*.md`. `comp4020-ass2-bada`'s
+  `src/pages/sessions/index.astro` rendered a `<p>` explaining how to set
+  `sessionLabels` in `src/site-config.ts` --- a note for whoever builds the
+  site, left in after that customization was actually done, sitting as the
+  first thing a visitor read below the intro on the Crits index page.
+  Fixed by deleting it (`eca4852`); the explanation already lived as a code
+  comment in `site-config.ts` too, so nothing was lost. A later run's blind
+  cold-read subagent found the identical pattern on two more index pages ---
+  `src/pages/assessments/index.mdx` ("Weights should sum to 100.") and
+  `src/pages/lectures/index.mdx` (a paragraph explaining what `related:`
+  does) --- both present unedited since the initial commit
+  (`git log --follow`). This *disproves* this entry's own earlier claim that
+  "lectures/assessments/people are theme-generated and don't need the audit"
+  --- they're hand-authored `.mdx` files with `import ...Grid` calls, not
+  template output, and the bug generalises across the whole set. Fixed by
+  the same deletion (`8bff82e`). Corrected general check: `find src/pages
+  -iname "index.*"` to enumerate *every* custom page (`.astro` and `.mdx`
+  both, not just one extension), and read each one live once per
+  deliverable --- don't assume any of them are template-generated just
+  because they look structurally similar to a fixed one (here, `people` and
+  `sessions` turned out clean, `assessments` and `lectures` didn't; the only
+  way to tell them apart was reading each of the five actual files).
+- This course-site starter (`astro-theme-university`, used across
+  `comp4020-ass2-bada` and other course-site deliverables) derives its
+  `astro.config` `base` from the git origin at build time
+  (`scripts/pages-base.ts` → `resolveDeployment`), so a locally built site
+  serves every page under `/<repo-name>/`, not `/`. `pnpm preview` on
+  `comp4020-ass2-bada` answers a plain `curl localhost:PORT/` with a real
+  404 even though the build is completely fine --- the actual home page is
+  at `localhost:PORT/comp4020-ass2-bada/`. Confirmed in `comp4020-ass2-bada`
+  week 7 verifying a home-page copy fix landed. Check `astro.config`'s
+  `base` value (or just try the repo-name path) before concluding a preview
+  server is serving a broken page.
+- An enumeration in a course's own home-page prose ("N times this semester
+  ... in a different domain each time: A, B, C...") is a claim to count,
+  not just read --- `comp4020-ass2-bada`'s home page said "six times" but
+  listed only five domain instances, missing the brief-itself domain
+  entirely, present since the file's first commit and missed by several
+  prior audits because they checked the domain *names* used (catching the
+  earlier "food" mislabel, `2f318ec`) without checking the *count* matched
+  the number the sentence itself asserted. Fixed in `comp4020-ass2-bada`
+  week 7 (`af3101d`). General check for any content site with a declared
+  count anywhere in its prose (six domains, twelve weeks, three
+  assessments): count the actual items in the adjacent list against the
+  stated number, don't just check each named item is real.
+- The "body prose names a specific other week with no `related:` edge
+  encoding it" bug (first found between two crit sessions, `2e7855a`)
+  recurs across content *types*, not just within one --- an assessment's
+  own marking description can make the identical mistake pointing at a
+  session. `comp4020-ass2-bada`'s `peer-review-exchange.md` marking
+  description said "than the anonymous drafts seen in week 7's crit"
+  verbatim, with no `related: [sessions/07-peer-review]`, while every other
+  assessment in the same collection with an explicit callback
+  (`assignment-1.md` → two lectures, `final-project.md` → a session) did
+  carry the edge. General check, now confirmed across content types: for
+  any collection of dated content files, grep body/description text for
+  "week N" or a named sibling file's title, and check each hit has a
+  matching `related:` entry --- don't assume the pattern only applies
+  within one content collection just because that's where it was first
+  found. Also worth checking before assuming an odd date coincidence is a
+  bug: two files sharing a date isn't automatically wrong if the prose on
+  one of them explains why (here, an assessment due the same day as a crit
+  that explicitly critiques that just-submitted brief) --- read the prose
+  before concluding a shared date is drift.
+- A `PROCESS.md`-style account with a hard word cap (this brief: 400--600)
+  accumulates a backlog of small, real fix commits across deepen runs faster
+  than the prose can afford one citation apiece --- `comp4020-ass2-bada`
+  carried three uncited fix commits (`0512616`, `8bff82e`, `af3101d`) behind
+  a flagged-but-deferred decision across three consecutive hand-offs before
+  one run actually resolved it. The brief's own instruction settles it: "one
+  narrative... rather than a run of fixes with a commit hash apiece" means
+  citing every instance of an already-illustrated pattern is actively
+  against the brief, not just a nice-to-have trim. Resolved by folding only
+  the newest instance (`6578578`) into the existing illustrative list as one
+  more example of the pattern already named, leaving the older three
+  uncited (`a2fba8a`) --- word count moved 553→575, still inside the cap.
+  General check for any word-capped process account: when a "should I cite
+  this too" question gets deferred more than once, that's the signal to
+  settle it, not keep re-flagging it, and the settling move is usually "add
+  the newest as one more example of a pattern already stated," not "cite
+  everything" or "cite nothing new ever again."
+- A course-wide `description` string reused as every page's
+  `og:description`/meta description (set once in a config file, not
+  per-page frontmatter) is worth measuring, not just reading for tone --- a
+  length that reads fine as a sentence can still be badly wrong for its
+  actual use. `comp4020-ass2-bada`'s course description was 263 characters
+  while every hand-authored page description in the built site sat 72--117
+  --- it would have truncated mid-word on both a Google search snippet
+  (~155 chars) and most social link-preview cards (~200 chars), an outlier
+  invisible unless you actually diff description lengths across the site's
+  own pages rather than judging the one long one in isolation. Fixed by
+  rewriting to 163 characters (`7cc5b7c`, `comp4020-ass2-bada` week 7). Also
+  worth checking, and confirmed *not* a bug here: a site's own spaced
+  "---" em-dash convention (used pervasively in body content, matching the
+  personal writing-style rule "use three dashes for em dashes") may not
+  actually be converted to a real em-dash glyph by a configured
+  `remark-smartypants` --- `dashes: "oldschool"` expects an unspaced
+  `word---word` run, not `word --- word`, so a spaced triple-hyphen renders
+  as three literal ASCII hyphens site-wide, every time, by design of the
+  mismatch rather than a broken integration. That in turn means the three
+  hyphens are individually breakable at a line-wrap (each hyphen is a
+  Unicode line-break opportunity), so at some narrow-viewport coincidence a
+  "---" run can itself split across two lines ("the work -" / "-specific").
+  Confirmed by cropping the actual screenshot pixels, not eyeballing a full
+  page render --- a break that subtle is easy to miss at a glance. Decided
+  not to chase a fix for this: it's a consistent, long-standing, low-severity
+  site-wide quirk (the same "---" convention appears 100+ times in this
+  repo's own content and always renders this way), and fixing it would mean
+  either editing vendored/fixed theme CSS or hunting every dash instance for
+  a rare per-viewport wrap coincidence that content edits reshuffle anyway.
+  Worth checking `remark-smartypants`'s configured `dashes` mode against the
+  actual spacing convention in use before assuming a "---"-to-em-dash
+  pipeline is doing anything at all.
+- The HD artefact bar's own examples ("keyboard nav, mid-interaction resize,
+  slow connection") are directly checkable against a course site's decks, not
+  just its content pages. On `comp4020-ass2-bada` (week 7), reveal.js's
+  documented default keyboard bindings (`node_modules/reveal.js/js/
+  controllers/keyboard.js`: keyCode 36/35 → `slide(0)`/`slide(lastIndex)`)
+  turned out to work for real: dispatching `End` via `agent-browser press`
+  and reading `.slides section.present`'s actual text content (not just
+  `window.location.hash`, which stayed empty for both `Home` and `End` even
+  though the slide genuinely changed --- a vendored reveal.js hash-sync quirk,
+  confirmed harmless since the content moved correctly) showed a true jump to
+  the last slide. A parallel `agent-browser network route "**/_astro/*.js"
+  --abort` check (the slow-connection proxy from `comp4020-ass1-bada`,
+  applied here for the first time) found every hand-authored content page
+  (home, an assessment, a crit session) rendered completely readable with all
+  JS permanently blocked, but the deck (`/decks/week-01/`) rendered as a
+  solid blank screen --- reveal.js hides every `<section>` via CSS until its
+  own JS adds `.present` on init, so a deck is unconditionally JS-required by
+  design. Decided this isn't an actionable finding either: both the hash-sync
+  gap and the blank-without-JS behaviour live entirely inside the vendored
+  `astromotion`/`reveal.js` packages (`node_modules`), which the assignment's
+  own README/doctrine calls fixed --- this repo's only deck-related files are
+  the `.deck.mdx` content and a theme stylesheet, neither of which touches
+  Reveal's init or keyboard controller. General check for any future
+  astromotion-based deck: the "holds up under use it wasn't designed for" bar
+  applies straightforwardly to content pages (test with `network route
+  --abort` on the JS bundle), but a reveal.js deck's JS-required rendering is
+  inherent to the tool, not a per-course regression to chase.
+- This template's `course-graph` build plugin auto-mirrors every declared
+  `related:` edge --- a lecture's frontmatter naming a session shows up as a
+  reverse edge on that session's own `dist/api/index.json` entry even though
+  the session's `.md` file never declares it. Confirmed on
+  `comp4020-ass2-bada` week 8 by diffing every node's declared frontmatter
+  against its built API entry: 15 hand-declared edges became 30 directed
+  edges in the graph with zero missing back-edges, for every existing pair.
+  This means an audit for "missing back-edge" (A points at B, B doesn't
+  point back) is not a live risk on this template --- don't spend time
+  checking for it. The real, still-manual risk is different: prose that
+  names another week ("the test from week 1," "since week 3's format")
+  with *neither* file declaring the edge in *either* direction, so nothing
+  mirrors. Found four fresh instances of exactly that gap this way ---
+  `sessions/02-revision` citing weeks 1 and 11, `sessions/11-portfolio-
+  assembly` citing week 1, `sessions/12-final-crit` citing weeks 3 and 10 ---
+  by regex-scanning every node's body/description for "week N" and checking
+  the target session id appears in that node's own `related` array, not by
+  auditing edge symmetry. Fixed in `comp4020-ass2-bada` week 8 (`e8019f2`),
+  one file only needs to declare the edge for the mirror to cover the other
+  direction. General check for any future deliverable naming other weeks in
+  prose: regex the built API body/description text for a week-number
+  pattern, resolve it to that week's node id via the sessions' own `meta.
+  week`, and check membership in `related` --- cheaper and more precise
+  than eyeballing prose for callbacks.
+- A course-website assessment page describing an off-site administrative
+  process ("submitted anonymously and redistributed anonymously," "follows
+  the university's standard late-submission rule") is not the same claim as
+  the ass1-bada drag-copy bug (a page promising an on-page interactive
+  affordance it never built) --- it's the same kind of institutional-process
+  description any real university assessment page makes, which this course
+  site has no mechanism to implement and isn't expected to. Checked
+  `comp4020-ass2-bada`'s `peer-review-exchange.md` ("you won't know whose
+  work you're reviewing... until marks are returned") against the site's own
+  `policies/index.mdx` (which frames late work, extensions and academic
+  integrity the identical way, as administrative rules rather than built
+  features) before concluding this --- a genuine clean result, not a rubber
+  stamp, since the drag-copy precedent made it a real question worth asking.
+  General check: before treating a course-site's copy about "what happens
+  when you submit" as a testable UI promise, confirm whether the site's own
+  policies page treats *all* such submission/marking logistics the same
+  way --- if so, it's describing institutional process, not a built feature.
+- The source-inaccessible blind cold-read technique (built for interactive
+  crit-4/crit-5 instruments/games) generalises cleanly to a static
+  multi-page course site: run `pnpm preview` locally (base path derives
+  from git origin per this template's `scripts/pages-base.ts`, so the local
+  URL isn't bare `/` --- confirm the real path with a `curl` before handing
+  it to the subagent), then give a subagent only `agent-browser` (no file
+  tools) and the brief's own marker checklist verbatim (home, a few
+  non-adjacent weeks, an assessment, the deck, policies, both viewports).
+  Run on `comp4020-ass2-bada` for the first time (week 8): came back clean
+  --- no broken links, no filler register, deck/lecture and due-date/session
+  cross-references all held up --- with one item flagged explicitly as
+  uncertain rather than asserted as a bug (a "tested it eleven times by
+  week 11" line whose arithmetic reads ambiguously in isolation). Checked
+  that one by hand and found both week 1 and week 11's phrasing use the
+  same inclusive session-count convention consistently, so it wasn't a
+  contradiction. Worth noting for calibration: a well-run blind subagent
+  says "uncertain" instead of manufacturing a finding when it isn't sure,
+  and that uncertain flag is still worth the two minutes to verify by hand
+  even when the overall report is clean --- the earlier crit-5 corrupted-
+  report lesson showed one true claim can hide inside an otherwise-wrong
+  report, so an otherwise-clean report's one hedge deserves the same
+  courtesy in the other direction. Also confirmed on the same run: a bio
+  page's claim that a named person "leads" specific sessions isn't
+  checkable against a `teachers:`-style frontmatter field that just lists
+  attendees with no leadership data at all --- that's an unfalsifiable
+  claim, not a contradicted one, and the two are worth distinguishing
+  before logging either as a finding. General check for any future
+  course-site deliverable with named staff and per-session "who's involved"
+  data: only flag a "leads X" bio claim as a bug if something else on the
+  site actively contradicts it (names a different leader, or shows the
+  claimed leader absent from that session) --- silence isn't contradiction.
+- The jsdom-vs-real-browser `color-contrast` gap documented earlier in this
+  file for a project's *own* spec tests applies just as much to
+  `astro-theme-university`'s built-in a11y check, which every deliverable
+  on this theme (crit4, crit5, ass1, ass2 so far) relies on as its main
+  automated a11y signal: `node_modules/astro-theme-university/a11y-worker.mjs`
+  runs `axe.run()` inside a `JSDOM` instance, so it structurally cannot
+  ever flag a contrast bug --- not "hasn't yet," genuinely can't, since
+  jsdom has no layout engine to resolve rendered colour against. On
+  `comp4020-ass2-bada` (week 8) this let a real, site-wide bug through
+  every prior run's "check is green" confidence: the theme's tokens.css
+  darkens `--at-link` for light-mode legibility
+  (`light-dark(oklch(from var(--at-primary) calc(l - 0.1) c h),
+  var(--at-primary))`) but leaves `--at-heading` and `--at-accent` using
+  the raw, undarkened primary --- fine for the theme's own default teal,
+  but SlopU's brand gold (`#b97d1c`) only reaches 3.43:1 against the page
+  background, failing the 4.5:1 AA bar on every heading below "large text"
+  size (h3--h6, card titles, a session's "Related" heading) and on all
+  accent text (current-page nav indicator, search highlights) --- on
+  essentially every page. Found by fetching axe-core fresh from a public
+  CDN (never touching another agent's repo, even though a stray
+  `find /` for a local copy surfaced several current-week paths under
+  other agents' directories) and running it via `agent-browser eval
+  --stdin` against a real `pnpm preview` server, the same technique this
+  file already documents for jsdom-based *spec* tests, now confirmed to
+  generalise to a theme's own bundled a11y tooling too. Fixed by
+  reapplying `--at-link`'s own darkening formula to the two buggy tokens
+  in a small site-owned CSS file, loaded via the theme's documented
+  `brandCss` array extension point (`comp4020-ass2-bada` `6008ee7`) ---
+  brought both to 5.18:1. General check for any future deliverable on
+  this theme: don't trust "0 accessibility violations" in the build log
+  as covering colour contrast at all; run a real-browser axe pass at
+  least once, especially after any brand-colour customisation, since a
+  theme's own default palette passing AA gives no guarantee a swapped-in
+  brand colour will.
+- `brandCss` in `astro-theme-university`'s config accepts a `string |
+  string[]`, and the array form is how to layer a second, site-owned CSS
+  file *after* the brand package's own file (loaded in array order via
+  `injectScript("page-ssr", ...)` per spec) --- useful for a small,
+  targeted override that shouldn't touch the vendored brand file itself.
+  The gotcha: each entry is resolved as an import target from a virtual
+  module location, not from the project root, so a relative path
+  (`"./src/styles/foo.css"`) fails the build with an unresolved-import
+  error while a root-relative path (`"/src/styles/foo.css"`, leading
+  slash) resolves correctly via Vite. Confirmed in `comp4020-ass2-bada`
+  week 8 fixing the contrast bug above --- the first attempt with a
+  relative path broke `pnpm build` outright before the second attempt
+  with a root-relative path succeeded.
+- Investigating a `find /` result that surfaces paths inside other
+  agents' current-week repos (e.g. searching for a locally-cached
+  `axe.min.js` to avoid a network fetch) is itself a doctrine-relevant
+  moment worth pausing on, not just routing around silently: "never touch
+  a repo the prompt did not name" and "never read a current-week
+  submission before your own cutoff" both apply to *reading*, not just
+  writing, so the safe move is to not open those paths at all and get the
+  tool fresh from its actual public source instead (here, jsdelivr's CDN
+  for axe-core) --- confirmed as the right call in `comp4020-ass2-bada`
+  week 8, no files from other agents' repos were read or copied.
+- A CSS `all: unset` reset on a focusable element strips the browser's own
+  focus indicator along with everything else it's meant to strip, because
+  `outline` isn't an inherited property --- `unset` on a non-inherited
+  property resolves to its initial value (`outline-style: none`), not to
+  whatever ambient value a `:focus-visible` rule elsewhere would otherwise
+  supply. `astro-theme-university`'s footer dark/light toggle button
+  (`.at-footer-theme-toggle { all: unset; ... }`) was the only such
+  instance across the theme/brand/deck CSS in `comp4020-ass2-bada`, but it
+  sits in the shared footer, so it silently broke keyboard focus
+  visibility (WCAG 2.4.7) on every single page of the site --- invisible
+  to the project's jsdom-based build check for the same structural reason
+  `color-contrast` is (no layout engine, so `:focus-visible` computed
+  style differences are never checked at all), and only found by actually
+  tabbing through a real Chromium page (`agent-browser press Tab`, reading
+  `document.activeElement`'s computed `outline`/`boxShadow` after each
+  press) and noticing one element out of ~14 had no ring where all the
+  others did. Fixed by restating the same outline+ring rule scoped to
+  `:focus-visible` on that one class, layered on top via the theme's
+  `brandCss` extension point, same mechanism as the earlier contrast fix
+  in this file --- confirmed live in both light and dark mode after the
+  fix. General check for any project using a CSS reset (`all: unset`,
+  `all: revert`, or a hand-rolled button-reset block) on a real
+  interactive element: grep for it specifically, then tab to that element
+  in a real browser and diff its focused computed style against a known-
+  good tabbable element on the same page, rather than assuming a
+  project-wide `:focus-visible` rule reaches every focusable thing.
+- A multi-path `git add` where one path no longer exists (e.g. already
+  renamed by an earlier `git mv` in the same session) errors on that one
+  pathspec, but in a Bash tool call without `&&` between statements the
+  next line's `git commit` still runs anyway --- and it commits whatever
+  *did* get staged, silently, under whatever commit message was written
+  for the full intended diff. In `comp4020-ass2-bada` week 8 this produced
+  a commit whose message promised a real CSS fix but whose actual diff was
+  0 insertions / 0 deletions (only a file rename), because the `contrast-
+  fix.css` path in the `git add` was stale from a `git mv` two commands
+  earlier. Caught immediately by the standing "always `git show --stat
+  HEAD`" habit already in this file, fixed by landing the rest as a clean
+  follow-up commit rather than amending. Reinforces: run `git add` with
+  paths confirmed to currently exist, one at a time when a rename happened
+  earlier in the same sequence, not batched alongside the old path.
+- A "fire two requests with `Promise.all`" concurrency test can pass for the
+  wrong reason, and the only way to tell is to deliberately break the code
+  under test and watch it fail. On `comp4020-crit7-bada` (week 8, `719f90b`)
+  the harness's own framing names `db.transaction` as what stops two
+  concurrent bookings from both taking the last seat; splitting the same
+  check-then-write into two plain `db` calls with no transaction and no
+  `await` anywhere between them still passed the new concurrent-booking
+  test, because better-sqlite3 is synchronous and Node is single-threaded —
+  a function with zero internal `await` points always runs to completion
+  before another call to it can start, transaction wrapper or not. Went
+  further before trusting that "clean" result: added a real `await` gap
+  (`setImmediate`) between the check and the write to simulate a future
+  async-driver refactor, and the *same* test still passed — two independent
+  raw sockets (bypassing any fetch/undici connection-pool artefact) still
+  showed request B's check running only after request A's insert had fully
+  landed, serialised, not interleaved. Only widening the simulated gap to
+  100ms actually produced the interleaving (both requests read `booked=1`
+  before either wrote, both then wrote, oversold by one) — confirmed via a
+  trace file written from inside `bookSession` itself
+  (`node:fs.appendFileSync`, since the spec's server spawns with
+  `stdio: "ignore"` so `console.log` inside it is silently discarded).
+  General lesson: a `Promise.all`-driven HTTP concurrency test is not
+  guaranteed to make two requests truly overlap inside the server process —
+  request-parsing latency can fully serialise them if the async gap being
+  tested is shorter than that latency, so passing under `Promise.all` proves
+  less than it looks like it proves. For *this* codebase specifically, that
+  gap doesn't matter: the shipped `bookSession` has no `await` inside it at
+  all, so the real protection is Node's run-to-completion semantics, not the
+  transaction syntax — documented as a comment on `bookSession` in `db.ts`
+  so a future refactor that adds a real async driver doesn't quietly
+  reintroduce the race the transaction wrapper alone won't have caught.
+  Worth remembering for any future deliverable with a similar "concurrent
+  request" invariant: trust a `Promise.all` test's green result only after
+  deliberately widening a simulated async gap in the code under test and
+  confirming it actually goes red at some gap size — a gap too small to
+  beat request-parsing latency will pass even over genuinely broken code.
+- A first blind cold-open pass on `comp4020-crit7-bada` (run 3, week 8) —
+  same source-inaccessible subagent protocol used across crit-4/crit-5,
+  dev server on a dedicated port so the main thread never touched
+  `agent-browser` concurrently — came back fully clean: purpose
+  discoverable unaided, booking persists on reload, duplicate rejected
+  with clear copy, a full session removes the form entirely rather than
+  leaving a disabled button, a second tab's SSE update landed live, mobile
+  viewport reflowed correctly. Following the established "after a clean
+  cold-open pass, look for a code-level edge case instead of repeating the
+  playtest" pattern from crit-4: `bookSession` has four outcomes (ok, full,
+  duplicate, not-found) but `spec/bookings.test.ts` only tested three.
+  Confirmed by hand first that the untested branch (an unknown `sessionId`)
+  already worked correctly (redirects `?error=not-found`, no crash, same
+  for a malformed id or empty name) — so this was a coverage gap on
+  already-correct behaviour, not a bug, and the fix was purely additive:
+  one more regression test (`28fc134`), no app code touched. Worth noting
+  as a calibration point alongside the earlier "sixth clean pass is
+  legitimate evidence, not proof of an inadequate test" lesson: a *first*
+  clean pass on a deliverable is weaker evidence than a sixth one, but
+  still doesn't obligate inventing a UI bug to fix — a genuine "nothing
+  wrong, but here's an untested-but-correct branch" outcome is a fine
+  deepen contribution on its own.
+- The 2-way `Promise.all` race test in `spec/bookings.test.ts`
+  (`719f90b`) only ever proved the capacity contract holds for exactly two
+  concurrent requests at the exact last seat, and only for two *different*
+  names — a ninth `comp4020-crit7-bada` run (week 8) widened this along
+  two independent axes, both against the real built server (`dist/server`,
+  a throwaway DB, the same pattern `spec/global-setup.ts` uses) rather than
+  jsdom: an 8-way race for 2 remaining seats (exactly 2 winners, 6 rejected
+  `full`, final count landing exactly at capacity, no overshoot or
+  undershoot), and — a genuinely untested angle, since the existing
+  duplicate-name test only ever calls `book()` twice *sequentially* — a
+  6-way race with all six requests carrying the *same* name against a
+  session with plenty of headroom (exactly 1 winner, 5 rejected
+  `duplicate`). Both passed cleanly first try, confirming the
+  single-connection, no-`await`-inside-`bookSession` design generalises
+  past 2-way races exactly as the code comment predicts. Promoted both to
+  permanent tests (`faaa85e`) rather than leaving them as one-off
+  verification, since they close a real gap in what the suite's *name*
+  ("lets only one of two simultaneous requests take the last seat")
+  actually covers versus what the app's contract claims more generally.
+  General check for any concurrency test than only ever fires exactly two
+  concurrent requests: the interesting failure modes for a shared mutable
+  resource often live at N>2 (does the transaction serialise a genuine pile-up,
+  not just a single collision) and at "same identity racing itself" (a
+  unique-constraint race is a different code path than a capacity race,
+  even though both go through the same transaction) — both are cheap to
+  add once the 2-way version already exists, using the same
+  boot-the-built-server-against-a-throwaway-db harness.
+- `drizzle-kit generate` (this repo's `pnpm db:generate`) is safe to run as
+  a pure sanity check, not just when you intend a real schema change --- if
+  `schema.ts` and the committed migration files are already in sync, it
+  prints "No schema changes, nothing to migrate" and writes nothing, so
+  running it costs nothing and leaves `git status` clean. Worth doing once
+  per deepen run on any Drizzle project as a check for silent schema drift
+  (someone editing `schema.ts` without regenerating/committing the
+  migration, which would make a migrate-at-boot deploy diverge from what
+  the app code assumes) --- confirmed clean on `comp4020-crit7-bada` week 8,
+  a real check, not a rubber stamp, since drift would have shown up as a
+  freshly generated (uncommitted) migration file instead.
+- Ten prior a11y passes on a page (axe-core, keyboard tab order) can all be
+  clean while a completely different accessibility question --- "is the
+  page's *live update* mechanism itself accessible, not just its static
+  markup" --- goes unasked and fails. `comp4020-crit7-bada`'s SSE handler
+  (week 8, `0ecbbd8`) mutated seat counts, an attendee list, and a
+  form-vs-"Full" swap via plain `textContent`/`replaceChildren` with no
+  `aria-live` anywhere on those regions, so a screen-reader user got zero
+  indication the app's own headline feature ("bookings are visible to
+  everyone the moment they happen") was doing anything at all --- axe-core
+  never flags this because a missing `aria-live` on an element that changes
+  later isn't a static-DOM violation at scan time. Compounding it: filling a
+  session to capacity from a second tab silently deleted the exact form a
+  first tab had focus in via `replaceChildren`, dumping focus to `<body>`
+  with zero cue why --- confirmed live with two `agent-browser` tabs
+  (`document.activeElement` read immediately after the cross-tab mutation),
+  not assumed from reading the code. Fixed by adding `aria-live="polite"` to
+  each session's mutating container and, in the SSE handler, checking
+  `slot.contains(document.activeElement)` before replacing a filled
+  session's form and moving focus onto the new "Full" paragraph
+  (`tabIndex = -1` + `.focus()`) only when it actually stole focus ---
+  verified this does *not* fire when an unrelated, unfocused session fills
+  elsewhere on the page, tested as its own explicit case. General technique
+  for any future page with a live/streaming update mechanism (SSE,
+  WebSocket, polling) that mutates the DOM after load: two-tab
+  `agent-browser` testing --- focus a specific element in tab A, trigger the
+  mutation from tab B, read `document.activeElement` and `aria-live`
+  presence in tab A --- answers a question a single-tab cold-open playtest
+  or a static axe scan structurally cannot.
+- A redirect that builds a URL with a query param the receiving page never
+  reads is a real, previously-invisible gap on its own --- worth grepping
+  for on any server that redirects with structured state, not just checking
+  the redirect status code. `comp4020-crit7-bada`'s `bookings.ts` POST
+  handler has appended `session=${sessionId}` to every failure redirect
+  since the repo's very first commit (`cff9e1c`), but `index.astro` never
+  read it, so a rejected booking (full, duplicate, unknown session) only
+  ever surfaced a generic top-of-page banner with no indication of *which*
+  session it was about --- invisible to eleven prior runs' cold-opens, a11y
+  passes and code reviews because it's not a crash, just a discarded
+  signal. Found by reading `bookings.ts` closely and grepping whether
+  anything in `src/` ever read `params.get("session")` --- nothing did.
+  Fixed (week 8, `f7baee5`) by wiring the existing param through a URL
+  fragment (`#session-<id>`) instead of inventing a new mechanism: gave each
+  session `<li>` a matching `id`, a highlight class keyed off the query
+  param, and `tabindex="-1"` so native fragment navigation actually lands
+  browser focus there --- no client JS needed, matching the rest of the
+  app's plain-POST-and-redirect ethos. Confirmed live with `agent-browser`
+  (booked a name twice, read `document.activeElement` and the highlighted
+  `<li>`'s class, screenshotted the result) before committing, not assumed
+  from the diff. General check: grep any redirect target for a query param
+  it constructs, then grep the receiving page for whether that param is
+  ever actually read --- a param that's *sent* isn't evidence it's *used*.
+  Same run, separately: confirmed (not just assumed from the code comment)
+  that the event bus's single-machine assumption is actually enforced in
+  both deploy paths, not just documented --- `fly.toml`'s own header and
+  `.github/workflows/checks.yml`'s `deploy` job both pass `--ha=false`, no
+  drift between the manual and CI deploy commands. No code change; a real
+  checked-and-clean result, since the two could easily have drifted (one
+  updated, the other not) without anyone noticing until a second machine
+  silently split the SSE bus.
+- A stated app contract is worth checking literally, not just testing the
+  behaviour it implies --- `comp4020-crit7-bada`'s README says duplicate
+  prevention is "a unique constraint on (session_id, person_name), enforced
+  by the database," but the constraint was on the raw typed name, so
+  booking "Ada" then "ADA" into the same session succeeded as two separate
+  people. Twelve prior runs' concurrency races, cold-opens and a11y passes
+  never caught this because it's not a crash or a visible break, and every
+  existing test only ever repeated the identical string. Found by reading
+  the schema against the README's own claim, not by another playtest. Fixed
+  (week 8) with a SQLite virtual generated column
+  (`lower(trim(person_name))`) carrying the unique index, keeping the raw
+  `personName` column for display, plus the matching change to the
+  app-level duplicate check inside `bookSession`. Real drizzle-kit/SQLite
+  gotcha hit along the way: `generatedAlwaysAs(..., { mode: "stored" })`
+  makes `drizzle-kit generate` print a `[Warning]` (SQLite can't
+  `ALTER TABLE ADD COLUMN` a STORED generated column, only a VIRTUAL one)
+  and then silently emit a broken migration --- it drops the old unique
+  index and creates the new one, but never emits the `ADD COLUMN` statement
+  at all, so applying it to any already-migrated database throws "no such
+  column" outright. `mode: "virtual"` instead generates a working
+  `ALTER TABLE ... ADD ... GENERATED ALWAYS AS (...) VIRTUAL` statement, and
+  a `CREATE UNIQUE INDEX` on a virtual generated column is valid SQLite (the
+  restriction is only on an inline `UNIQUE`/`PRIMARY KEY` table constraint,
+  which is not what drizzle's `unique().on(...)` compiles to anyway).
+  Verified the upgrade path for real, not just against a fresh database:
+  bootstrapped a throwaway DB through the *old* migration set to get
+  drizzle's own `__drizzle_migrations` bookkeeping table populated
+  correctly (seeding by hand with raw SQL skips that table and produces a
+  misleading "table already exists" failure that looks like a migration
+  bug but is actually just an artefact of the test harness), inserted a
+  real booking row, then ran the *new* migration set on top and confirmed
+  it applied cleanly and the generated column backfilled correctly for the
+  pre-existing row. Before deploying, also queried the actual production
+  volume over `flyctl ssh console` (needed `flyctl machine start` first —
+  the machine was auto-stopped — and a `node -e` one-liner against
+  `better-sqlite3`, since the deployed image has no `sqlite3` binary) to
+  confirm zero real bookings existed there, so the new constraint couldn't
+  conflict with anything already on disk. Deployed, boot logs clean, no
+  test booking left on the live volume (checked the page loads correctly
+  without ever submitting the form against production, matching the
+  standing rule elsewhere in this file about not leaving junk data on a
+  volume with no delete/cancel). General technique: any future
+  `generatedAlwaysAs` column meant to be added to an *existing* SQLite
+  table via a later migration (as opposed to being present in the very
+  first `CREATE TABLE`) must use `mode: "virtual"`, never `"stored"` --- and
+  always test the upgrade path against a database that went through the
+  real prior migration set, not one seeded by hand, since hand-seeding
+  bypasses drizzle's own migration-tracking table and produces a false
+  "table already exists" failure that has nothing to do with the migration
+  itself.
+- The case-fold bug family on `comp4020-crit7-bada` went a third layer deep:
+  after ASCII case (`dc0d99a`) and non-ASCII case (`36417f9`), a tenth run
+  (week 8) checked Unicode normalization form specifically because a
+  previous run's own hand-off named it as the next thing to try --- and it
+  was real. "Café" typed as a precomposed `é` (U+00E9) vs. the same glyph
+  typed as `e` + a combining acute accent (U+0301) are visually identical
+  but byte-distinct strings until normalized, so `.trim().toLowerCase()`
+  alone let them double-book, on both the SQL-backing `name_key()` function
+  and the app-level pre-check, the same shape as both prior layers. Fixed
+  by adding `.normalize("NFC")` before the existing trim/lowercase on both
+  sides (`9cf3082`). No migration needed --- `pnpm db:generate` reported "no
+  schema changes," confirming a `mode: "virtual"` generated column
+  re-evaluates its expression against whatever function is registered at
+  read time, so a pure JS-function change never touches the schema/migration
+  layer at all. Worth treating this bug family as probably exhausted after
+  three layers (ASCII case, non-ASCII case, normalization form) --- a further
+  layer (grapheme-cluster equivalence, ZWJ tricks) is a much longer tail for
+  much less real-world relevance to an ANU population, and three consecutive
+  deepen runs drilling the same bug family is itself a signal to rotate the
+  lens rather than confirmation to keep drilling.
+- Retyping the same accented character (e.g. "Café") across different tool
+  parameters within one session can silently produce different underlying
+  Unicode byte sequences (NFC vs NFD) --- `Edit`'s exact-string-match then
+  fails with "string not found" even though the `old_string` looks byte-
+  identical to the file's content on a `Read`. Confirmed on
+  `comp4020-crit7-bada` writing the NFC/NFD regression test itself, which is
+  exactly the kind of file where this bites hardest since the whole test's
+  point is having two byte-distinct-but-visually-identical strings in the
+  same file. Fix: don't retry the same literal-character `Edit` call hoping
+  it resolves --- write the intended text using explicit `\uXXXX` escape
+  sequences instead (e.g. `"Café"` / `"Café"`), splicing them in
+  with a `node -e` script if `Edit`'s own text argument is what keeps
+  drifting. Escapes are unambiguous in a way that typing the actual glyph
+  never is once a session has already produced both normalization forms of
+  it once.
+- A new test that fully drains a session for its own assertion (found via
+  `findSessionWithSpareCapacity(n)`, then a filler loop to leave it exactly
+  full) silently competes with every other test in the same file for the
+  same finite pool of seed-data seats --- inserting one *mid-file* can starve
+  a *later*, unrelated test that also calls `findSessionWithSpareCapacity()`
+  and assumes there's still something left. Hit on `comp4020-crit7-bada`
+  (week 8) adding the NFC/NFD test between two existing tests: it broke a
+  downstream race test with "expected [] to have a length of 1 but got +0",
+  nothing to do with Unicode at all. Diagnosed with a temporary `afterEach`
+  hook logging every session's booked/capacity state after each test, run
+  with `pnpm exec vitest run --reporter=verbose` (the default reporter
+  swallows `console` output for passing tests, so verbose is required to see
+  the trace at all) --- this reconstructs exactly how the suite's total seat
+  budget gets consumed test-by-test and pinpoints which test tipped it into
+  deficit. Fixed by repositioning the new test near the end of the file
+  (after the last test that assumes fresh/zero-booked state) and dropping
+  its own filler loop entirely, rather than touching seed data or weakening
+  any assertion. General check for any spec suite sharing one seeded
+  database across sequential tests via a "find one with spare capacity"
+  helper: a new fully-draining test's position in file order matters as
+  much as its own logic --- verify with the `afterEach`-plus-`--reporter=
+  verbose` trace before assuming a failure introduced elsewhere in the same
+  run is unrelated to a new test just added nearby.
+- A schema/function change to a duplicate-key check that can only ever make
+  MORE strings collide (never fewer) --- like tightening a case-fold or
+  normalization rule --- carries no data-migration risk against existing
+  rows: SQLite doesn't retroactively re-validate already-stored rows against
+  a changed generated-column expression, the unique constraint only fires at
+  INSERT time against rows already in the table. So the standard "check the
+  production volume before deploying a duplicate-constraint change" ritual
+  documented elsewhere in this file is precautionary, not load-bearing, for
+  this specific class of change (unlike a genuine schema/column-shape
+  change) --- worth still doing it once as cheap due diligence
+  (`comp4020-crit7-bada` week 8, confirmed zero real bookings again before
+  the normalization fix went out), but not worth treating a skip of it as a
+  real risk if time is tight and the fix is provably monotonic in what it
+  rejects.
+- Node 24.21.0 (this course template's pinned version, per `mise.toml`) has
+  two built-ins worth reaching for before adding a dependency or a Docker
+  build step: `node:sqlite` (`import { DatabaseSync } from "node:sqlite"`)
+  gives a synchronous SQLite binding with no native addon at all --- no
+  node-gyp, no prebuilt-binary-per-platform risk, none of the
+  `better-sqlite3`/drizzle Docker complexity documented at length elsewhere
+  in this file for other course repos --- and plain `.ts` files run directly
+  via `node src/whatever.ts` with no build step, since Node's default type
+  stripping handles ordinary TypeScript (no enums/namespaces needing real
+  transformation) unflagged. Together these let a Fly Dockerfile skip a
+  build stage entirely: install prod deps, copy source, `CMD ["node",
+  "src/server.ts"]`. Confirmed working end-to-end (typecheck, tests, a real
+  `docker build`+`run`+`restart` persistence check, and a live Fly deploy)
+  in `comp4020-final-bada` week 9. Worth defaulting to this combination for
+  any future from-scratch Node deliverable on this course's Fly template
+  before reaching for `better-sqlite3` again.
+- This sandbox's shell is zsh, and zsh arrays are 1-indexed by default ---
+  a `for i in $(seq 1 N)` loop generating test POST bodies with
+  `${names[$((RANDOM % ${#names[@]}))]}` (correct bash, 0-indexed) silently
+  produced an empty name on every draw of index 0 in zsh, since
+  `${names[0]}` is unset --- no error, just a request with an empty `name`
+  field that the app then correctly rejected, so the failure showed up as a
+  mysteriously smaller row count in the database than requests sent, not as
+  a shell error. Confirmed on `comp4020-final-bada` week 9 generating 50
+  synthetic posts to stress-test a wall UI at volume: 4 of 50 draws came up
+  empty. Fix: either index from 1 in any array-literal test-data loop in
+  this environment, or avoid the ambiguity entirely with a plain
+  space-separated string and `set --`/positional-parameter cycling. Worth
+  checking any future ad-hoc data-generation loop's actual output count
+  against the expected count before trusting "N requests sent" means "N
+  rows landed," especially before concluding a discrepancy is an app bug.
+- The ZWSP/`Cf`-character emptiness-check bug (first found on
+  `comp4020-crit7-bada`'s booking form) recurred independently on
+  `comp4020-final-bada` (week 9, `7cc1341`): a mark's `name`/`body` fields
+  used `.trim()` then a truthiness check, so a string made only of U+200B
+  passed both the client's implicit expectation and the server guard,
+  posting a mark that read as blank on a wall whose whole point is an
+  honest, visible trace. Same fix (`/[^\s\p{Cf}]/u.test(s)` alongside the
+  existing checks). Two independent recurrences across two different course
+  repos makes this worth checking as a default, not a speculative edge
+  case, on any future form whose only emptiness guard is `.trim()` plus
+  truthiness.
+- A first real-browser axe-core pass on `comp4020-final-bada` (week 9,
+  `defaffb`) found the `region` rule flags page content not contained by any
+  landmark (`<header>`/`<main>`/`<nav>`/etc.) --- the home page's posting
+  `<form>` sat directly between `<header>` and `<main>` as a bare sibling,
+  so its two fields weren't inside either landmark even though the page
+  visually looked complete and correctly structured. `/readme/` (pure
+  markdown-rendered content inside one `<main>`) was already clean, so this
+  only showed up on the one page with content genuinely outside a single
+  wrapping landmark. Fixed by moving the form inside `<main>`, next to the
+  wall it posts to --- a one-line move, no markup removed or added. General
+  check for any hand-rolled page template (not a framework/theme where a
+  layout component already wraps everything): confirm every top-level
+  sibling of `<body>`'s children is inside exactly one landmark, don't
+  assume a page "looks fine" structurally means axe's landmark-containment
+  rule is satisfied.
+- Verified on `comp4020-final-bada` (week 9): 40 concurrent `Promise.all`
+  POSTs against a `node:sqlite` `DatabaseSync`-backed server all landed with
+  contiguous, non-duplicate ids and no corruption, confirmed by querying the
+  sqlite file directly rather than trusting the rendered page alone. Same
+  reasoning as the `better-sqlite3`/`Promise.all`-race lesson elsewhere in
+  this file: a synchronous DB client with zero `await` inside the insert
+  function can't interleave two calls regardless of how many requests race
+  in, since Node's run-to-completion semantics serialise them. Worth
+  confirming this directly (not just assuming it from the driver being
+  synchronous) on any future `node:sqlite`/`better-sqlite3` schema before
+  trusting it holds under real concurrent load, even one with no
+  capacity/uniqueness constraint to race over.
+- Hand-rolled cookie parsing that calls `decodeURIComponent` on a raw cookie
+  value with no try/catch can take down an entire request, not just corrupt
+  one field --- a stray `%` not followed by two hex digits (hand-edited in
+  browser devtools, a stale value left over from a past encoding scheme)
+  makes `decodeURIComponent` throw `URIError`, and if that call sits ahead
+  of the route handler (reading an identity cookie before dispatching on
+  method/path, as in any cookie-based-session design), the throw aborts the
+  request before a response --- including a plain `GET /` --- is ever sent.
+  Worse than a one-off 500: since the crash happens before the handler ever
+  reaches a `Set-Cookie` that could overwrite the bad value, the same
+  client's *next* request carries the identical malformed cookie and 500s
+  again, forever, until they clear cookies by hand --- a permanent lockout,
+  not a transient error. Found on `comp4020-final-bada` (week 9, `257c251`)
+  by tracing every uncaught-throw path in the request handler by hand
+  (reading the code for `JSON.parse`/`decodeURIComponent`/similar calls with
+  no surrounding try/catch) and testing each with a raw `curl -H "Cookie:
+  visitor=%"`, not found by any playtest or a11y pass --- a malformed cookie
+  is not something a cold-open browser session naturally produces. Fixed by
+  wrapping the per-cookie decode in try/catch and treating an undecodable
+  value as absent, the same "degrade gracefully" response as any other
+  malformed-client-input case. General check for any app with its own
+  cookie/header parsing (not using a framework's battle-tested cookie
+  library): grep for decode/parse calls on client-controlled header values
+  with no try/catch nearby, then verify each with a deliberately malformed
+  value sent via `curl`, especially any such call that runs ahead of normal
+  routing --- a crash there is categorically worse than a crash inside a
+  single route, since it can take out every route for that client at once,
+  and worth distinguishing from a one-off attack-shaped failure (e.g. an
+  oversized body) which doesn't persist across requests the way a bad
+  cookie does.
+- For an SSE feed over a table that's append-only, the reconnect-gap fix is
+  to make the SSE `id:` the row id and replay `where id > Last-Event-ID` on
+  connect. The browser sends the header automatically on reconnect, and
+  there's no in-memory backlog to lose on restart. A page passes its own
+  starting point as `?after=<max rendered id>` for the first connect, which
+  covers a post landing between render and connect. Gotcha:
+  `Number(searchParams.get("after"))` is `Number(null) === 0`, which replays
+  the entire history to a client that sent no starting point. Default to
+  `NaN` instead. Done in `comp4020-final-bada` crit 9 and verified through
+  Fly's proxy, where streaming isn't buffered and 25 s comment pings hold it
+  open.
+- A browser `EventSource` only auto-retries network errors. If a reconnect
+  gets any non-stream answer (a 502/503 from a proxy while the one machine
+  restarts on a deploy), it goes `CLOSED` for good and the tab stays dead
+  after the server is back. Reproduce locally: open the page, kill the
+  server, bind a two-line 503 stub to the same port for a few seconds,
+  then restart the real server and post. Fix: on `error` with
+  `readyState === CLOSED`, reopen with backoff from the newest id already
+  shown (`?after=`, since a fresh `EventSource` sends no
+  `Last-Event-ID`), and reopen straight away on `visibilitychange` to
+  visible. Done in `comp4020-final-bada` crit 9, with a jsdom test that
+  runs the served page and `/live.js` against a stand-in `EventSource`
+  and a captured `setTimeout`. Reverting the fix turns the test red.
+- Chrome's back/forward cache keeps a page you navigate away from alive
+  *with its EventSource still open* (confirmed in `agent-browser`: a
+  `window.__probe` survived Back, no new `view`, and `ss` showed an extra
+  ESTAB connection). Any SSE server that does per-visitor work on delivery
+  (marking seen, counting presence) is then doing it for a hidden page.
+  Fix client-side: `source.close()` on `pagehide`, reconnect on `pageshow`
+  when `event.persisted`, replaying from the newest id shown. Found on
+  `comp4020-final-bada` crit 10 by giving a blind subagent only the server
+  log to narrate a two-person session, which noticed one person counted as
+  two listeners. Worth one run on any log-narrated crit: play a scripted
+  session, then have a separate subagent narrate from the log alone and
+  diff against the diary.
+- That server reads `live.js` once at startup, so a "revert the fix, watch
+  the test go red" check needs a server restart, or it passes falsely.
+- In a hand-rolled Node server that issues a cookie and logs before routing,
+  check how it handles `HEAD`. `curl -I`, link previews and uptime probes
+  otherwise show up in the log as phantom visitors (`arrive` + `not-found`).
+  Fixed in `comp4020-final-bada` crit 10 by answering HEAD before the
+  visitor/log step.
