@@ -37,7 +37,7 @@ The server owns every room's state; the browser renders it and sends intentions.
 
 Every command is validated server-side: session (the socket's player), membership, stage generation, phase, integer and in-bounds coordinates, finite movement vectors, range (2.2 tiles to harvest, 3 to load, 8 to build, 14 to lay a line), cooldowns, footprint and terrain, claims, affordability in raw stock and goods, ownership of buildings, lines and claims, line shape (contiguous, no self-crossing, at most 32 tiles), recipe and mode names, and string length. `placementProblem`, `claimProblem` and `linePathProblem` are the same functions the browser's ghost previews call, so a preview and the server's verdict agree; only the server's counts.
 
-**The economy tick** (`shared/economy.ts`) runs in a fixed order: construction (picketed sites at half speed), workers, each cable grid's generation (furnaces light only for a grid that needs them; the Bottled Sun tapped only for the shortfall), pumps, pipes, domes, relays, datacentres, factories, harvesters, homes, belts, heat, pollution. Within each kind it goes by building id, so allocation never depends on message order. Then exhaustion is checked, and only then the Green Lobby acts (`shared/lobby.ts`), so a spent world can't be replanted.
+**The economy tick** (`shared/economy.ts`) runs in a fixed order: construction (picketed sites at half speed), workers, each cable grid's generation (furnaces light only for a grid that needs them; the Bottled Sun tapped only for the shortfall), pumps, pipes, domes, relays, datacentres, factories, harvesters, homes, belts, heat, pollution. Within each kind it goes by building id, so allocation never depends on message order. Then exhaustion is checked, and only then the Green Lobby acts (`shared/lobby.ts`), so a spent world can't be replanted. At the end of every tick, requests for help are checked against their buildings and come down when the shortage is met or changes, the building is gone, or their time is up ([ADR 0002](adr/0002-requests-for-help.md)).
 
 **Movement** is a continuous intent (a direction vector); the server integrates it at 10 Hz. There are no collisions, so the browser predicts its own avatar exactly and eases toward the server's answer, snapping only if more than 1.5 tiles off. Other avatars are interpolated two ticks behind the latest update.
 
@@ -45,19 +45,19 @@ Every command is validated server-side: session (the socket's player), membershi
 
 ## Protocol
 
-Defined in [`shared/protocol.ts`](../shared/protocol.ts), JSON text frames, `PROTOCOL_VERSION = 2`. A client and server on different versions refuse each other ("this page is out of date: reload it").
+Defined in [`shared/protocol.ts`](../shared/protocol.ts), JSON text frames, `PROTOCOL_VERSION = 3`. A client and server on different versions refuse each other ("this page is out of date: reload it").
 
 Client to server:
 
 - `hello {v, room, token?, name}`: join; a known token resumes that player, anything else makes a new one
-- `cmd {id, inc, gen, c}`: an intention (`move`, `harvest`, `build` (optionally efficient), `claim`, `unclaim`, `line`, `unline`, `tend` (load or collect), `set` (harvest mode, recipe, target), `upgrade`, `demolish`, `emote`, `mark`, `stop`) with a client-chosen id, the room incarnation and the stage generation it was meant for
+- `cmd {id, inc, gen, c}`: an intention (`move`, `harvest`, `build` (optionally efficient), `claim`, `unclaim`, `line`, `unline`, `tend` (load or collect), `set` (harvest mode, recipe, target), `upgrade`, `demolish`, `emote`, `mark`, `ask` (a request for help with a short machine beside you), `unask`, `stop`) with a client-chosen id, the room incarnation and the stage generation it was meant for
 - `sync`: ask for a fresh snapshot
 - `ping {n}`
 
 Server to client:
 
 - `welcome {v, inc, you, token, snap}`: a full snapshot (state minus other players' tokens and receipts) and its sequence number
-- `delta {seq, gen, tick, players, moves?, tiles?, buildings?, removed?, lobby?, meta?, log?}`: changes since the previous delta, sent only when something changed, at most once per tick. Lines (cable, pipe, belt and its load, path) travel inside tiles; the Green Lobby's agents and seed bank as `lobby` whenever one moves; goods, claims and this world's operating measurements inside `meta`
+- `delta {seq, gen, tick, players, moves?, tiles?, buildings?, removed?, lobby?, meta?, log?}`: changes since the previous delta, sent only when something changed, at most once per tick. Lines (cable, pipe, belt and its load, path) travel inside tiles; the Green Lobby's agents and seed bank as `lobby` whenever one moves; goods, claims, requests for help and this world's operating measurements inside `meta`
 - `ack {id, ok, reason?}`: for every command except `move`
 - `error {reason}`, `pong {n}`
 
@@ -76,7 +76,7 @@ Server to client:
 ## Persistence
 
 - **Store**: `DATA_DIR/plenty.db` (SQLite, WAL), table `rooms(code, schema, state, saved_at)`, the whole `RoomState` as JSON. World, sequence and receipts are in one row, so they can't disagree about what was applied.
-- **Schema**: `SCHEMA_VERSION` (now 2) in each row. Table migrations run in order against `PRAGMA user_version` at boot (`server/store.ts`); a row saved at an older schema is brought forward on load by `server/migrate.ts` (schema 1 rooms get no goods, no claims, zero restored, a fresh lobby, and their buildings marked `legacy` so their economy keeps running), and a row from a newer schema refuses to load rather than load wrongly.
+- **Schema**: `SCHEMA_VERSION` (now 3) in each row. Table migrations run in order against `PRAGMA user_version` at boot (`server/store.ts`); a row saved at an older schema is brought forward on load by `server/migrate.ts` (schema 1 rooms get no goods, no claims, zero restored, a fresh lobby, and their buildings marked `legacy` so their economy keeps running; schema 2 rooms get no requests for help up), and a row from a newer schema refuses to load rather than load wrongly.
 - **Save frequency**: every 5 s while a room has changed, immediately when a room empties, immediately at every stage boundary (before anyone is told about it), and for every room on SIGTERM or SIGINT.
 - **Maximum rollback**: 5 s of play after an abrupt crash. A rolled-back command's receipt rolls back with it, so a retry after recovery is treated as new, not wrongly acknowledged as done. The spec kills the server with SIGKILL to check this.
 - **Transitions survive crashes**: the transition state is saved before it's announced, and the next world is a pure function of the saved seed and stage, so a restart during a transition finishes it exactly once with the same map and no doubled carryover.

@@ -25,7 +25,7 @@ Plenty keeps Hearth's attachment through landmarks, player-named places and wild
 - **Inventory doesn't carry between worlds; the Bottled Sun does.** Each world opens with a small starter crate, so balance is predictable per stage, and the one carryover is the one the prompt makes consequential: the Sun's energy.
 - **No readiness vote at transitions.** The server moves the room on after a fixed pause, so no absent player can block it.
 - **No rotation.** No building's function depends on facing, so rotation would be decoration with a key binding.
-- **No text chat.** Emotes, named places and the activity log carry communication. This removes the moderation surface rather than half-building one.
+- **No text chat.** Emotes, named places, requests for help and the activity log carry communication. This removes the moderation surface rather than half-building one. A request for help has no words of its own: it points at a machine and repeats the machine's own status, and comes down when that stops being true ([ADR 0002](adr/0002-requests-for-help.md)).
 - **Host is a role, not a person.** The creator, or the longest-connected player present. The host can take down anyone's building and render down World Engines.
 - **Hand harvest slowed to 0.8 s and stocks deepened about 1.4×** after measuring a two-player Earth at under three minutes. See [`DESIGN.md`](DESIGN.md#pacing).
 - **Movement sent as compact tuples** after measuring bandwidth. See [`TESTING.md`](TESTING.md).

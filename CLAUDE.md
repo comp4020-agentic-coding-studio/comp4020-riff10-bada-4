@@ -45,6 +45,7 @@ Plenty is a multiplayer game: one Node process (`server/`) owns every room's sim
 - Gate leaving a world on anything but exact exhaustion. The chain (factory, claim, datacentre) guides play; it never blocks a transition, and the lobby stops the moment a world is spent.
 - Advance a world without its players, or wipe a finished campaign. Empty rooms pause ([ADR 0001](docs/adr/0001-empty-rooms-pause.md)); the ending is permanent and a new campaign is a new room.
 - Accept a write or a WebSocket from another origin, or render user text as anything but text (React children, `textContent`, `fillText`).
+- Let players talk in free text. A request for help (`ask`) only points at a building the server sees as idle and repeats its status; it comes down when that stops being true or times out, and never moves stock ([ADR 0002](docs/adr/0002-requests-for-help.md)).
 
 ## What a change must not break
 

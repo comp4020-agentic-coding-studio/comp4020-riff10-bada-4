@@ -45,6 +45,16 @@ The factory chain, claims, networks and the Green Lobby (crit 10):
 - an equal Bottled Sun makes more parts through an efficient factory than a quick one before it runs out, and an idle factory leaves the reserve alone
 - a schema-1 room migrates with no goods, no claims and zero restored, keeps its datacentre, and the datacentre keeps running; a belt carrying coolant into a legacy datacentre delivers nothing (the review found it vanished into a tank legacy buildings never drink from)
 
+Requests for help ([ADR 0002](adr/0002-requests-for-help.md)), each shown failing against the simulation before the feature:
+
+- refused for a machine that isn't short ("your Plaza isn't short of anything"), for open ground, for malformed coordinates, from out of load range, and for an unfinished site whose status a test forged; raised for a factory short of ore, with the economy's exact status, a log line and an `ask` event
+- loading the factory doesn't take the request down; the economy running the machine does, with a log line and an `ask_cleared why=resolved` event
+- a different shortage (the cable taken up after ore arrived) takes it down and the log names the new gap; taking the building down does too
+- a count changing inside the same shortage ("has 1") keeps it; it expires exactly `ASK_TICKS` after it was raised
+- raising, partly filling, and expiring a request leave the ledger, stockpile, goods, seed bank and every building's buffers exactly as they were; `ledgerHolds` stays true
+- one per player (asking elsewhere moves it) and one per building (a second asker is told who asked); withdrawing takes it down
+- a new world starts with none; a schema-2 room migrates with none
+
 **`spec/server.test.ts`**, the real server over HTTP and WebSocket:
 
 - `/`, `/play/` and `/api/health` answer
@@ -56,11 +66,12 @@ The factory chain, claims, networks and the Green Lobby (crit 10):
 - malformed messages are refused without disturbing the room
 - **restart recovery**: a private server on its own data directory is stopped with SIGTERM and restarted; the player rejoins as themselves under a new incarnation and the harvested tile is as they left it
 - **crash recovery**: the same after SIGKILL, once the 5 s save interval has passed (both now check the ledger's extracted count rather than one tile, since a lobbyist may replant that tile in between)
+- **requests for help**: a player gathers, builds a factory that goes idle for ore, and a fabricated request for open ground is refused; a real one reaches a second open session within a second, in a delta's `meta.asks`, with its log line; the second player reconnects and finds it in their snapshot; the factory is taken down and the request comes down on the second player's screen (shown failing against the previous server)
 - **the action log**: a private server's stdout names both players' joins with their ids and names, a harvest-mode change, a lobbyist's arrival, every line in the `room= stage= tick= actor= name= action=` shape, and never either player's token
 
 **`spec/invariants.test.ts`**, the course's: `/` answers and `/readme/` publishes this README with every heading.
 
-55 tests, all passing locally against a freshly built server.
+62 tests, all passing locally against a freshly built server.
 
 ## Multiplayer playthroughs
 
@@ -82,6 +93,14 @@ The factory chain, claims, networks and the Green Lobby (crit 10):
 - **Mobile**: at 390×844 the toolbar scrolls, the corner buttons sit above it, and tapping open ground walked the player there.
 - Console clean throughout.
 - **A whole live campaign**: a rush bot and a green bot over the real protocol, rapid preset, from Earth to the consumed ending in about 13 minutes, a factory and datacentre on every world, two World Engines rendered down in the Universe when the Bottled Sun ran out. Reading its server log found one narration bug: a render logged the engine's name in place of the player's. Fixed, with a spec that every event names its actor.
+
+**Requests for help in two real browsers** (`agent-browser`, two isolated sessions: Ada at 1920×1080, Bo at 390×844, rapid preset, local server):
+
+- Ada stood by her own factory, idle for ore, and pressed `R`. Within a second Bo's roster read "Ada · host / ⚑ asks for help: their Factory is idle, no metal ore (needs 3, has 0)", and his map showed the flag and label over the factory.
+- Ada reloaded the page; the request was still there.
+- Bo walked over, harvested, and loaded 2 of the 3 ore with `F`. The request stayed, and Ada's roster now read "(needs 3, has 2)". After a second harvest and load the factory had its ore but no cable. The request came down on both screens, and the log read "Ada's Factory has what Ada asked for; now it's idle, no power: not cabled to a generator." The server logged `action=ask_cleared id=1 why=changed`.
+- Keyboard: the inspect panel's "Ask the room for help (R)" and "Take request down (R)" buttons are reachable with Tab, show the site's blue focus ring, and work with Enter.
+- axe-core in the browser found the roster's "away" rows (dimmed with opacity) under contrast; they now dim the swatch and keep the text dark. The remaining contrast findings are the Cooperative memo's not-yet steps, which predate this change.
 
 ## Visual inspection
 

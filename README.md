@@ -17,6 +17,7 @@ Start a world from the front page and send the invite link (or the five-letter r
 - **Lay lines** with `L`: click where it starts, then where it ends. Cables carry power (a machine only has what its own grid makes), pipes carry coolant from a pump, belts carry items towards their arrows (start a belt on the side of another to split it), and paths are quicker to walk. `G` shows every network. `X` on a line takes up that tile.
 - **Claim** a 4×4 plot with `C` (3 timber, two each). A datacentre has to sit on your own claim. Nobody else can build or take anything down there, but anyone can still walk, harvest and connect.
 - **Help raise** a building site by pressing `E` beside it: several people building together finish faster.
+- **Ask for help** with `R` beside a machine showing "!": a small flag in your colour goes up over it for everyone, with the machine's own words ("no metal ore (needs 3, has 0)") under your name in the player list. It comes down by itself once the machine isn't short any more, or after two minutes. `R` again takes it down.
 - `I` inspects a building (recipes, buffers, what it runs on, why it's idle, and its efficiency kit), `X` takes one down for half its cost back, `N` names a favourite place, `V` surveys every deposit left, `P` saves a photo, and `Shift`+`1`--`6` emotes.
 - `H` opens help in the game.
 
@@ -85,4 +86,4 @@ The rapid preset (a button on the front page) runs the same rules with the econo
 
 ## Known limits
 
-Desktop browsers with a keyboard first; on a phone you can tap to walk, harvest and use the toolbar, but laying lines is fiddly. One server process and one Fly machine host every room, so a deploy or crash pauses all rooms for a few seconds and can roll back up to five seconds of play. There's no text chat by design (emotes only), so moderation is limited to the host taking down buildings. The full list, and what to build next, is in [`docs/TESTING.md`](docs/TESTING.md).
+Desktop browsers with a keyboard first; on a phone you can tap to walk, harvest and use the toolbar, but laying lines is fiddly. One server process and one Fly machine host every room, so a deploy or crash pauses all rooms for a few seconds and can roll back up to five seconds of play. There's no text chat by design (emotes and requests for help only), so moderation is limited to the host taking down buildings. The full list, and what to build next, is in [`docs/TESTING.md`](docs/TESTING.md).

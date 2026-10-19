@@ -140,7 +140,7 @@ Each world is data in `STAGES` plus one mechanic switch in the economy tick. Map
 - The host is whoever created the room, or the longest-connected player when the host is away. The host can take down anyone's building and render down World Engines.
 - A departed player's buildings stay up and keep working, under their name; they come back as themselves via their browser's token.
 - Late joiners land in the current world at the spawn point and can do everything at once.
-- Safeguards: no chat (emotes only, so no user text except names, which are cleaned and capped), only owners and hosts can demolish or reconfigure, 40 messages a second per connection, 2 KB per message, eight players per room.
+- Safeguards: no chat (emotes and requests for help, which repeat a machine's own status; no user text except names, which are cleaned and capped), only owners and hosts can demolish or reconfigure, 40 messages a second per connection, 2 KB per message, eight players per room.
 - Every action is a line in the server's log, with the room, the world, the actor's id and display name: see [`ARCHITECTURE.md`](ARCHITECTURE.md#the-action-log).
 
 ## Pacing
