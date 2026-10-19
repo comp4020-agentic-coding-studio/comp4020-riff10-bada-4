@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BUILDINGS, CLAIM_SIZE, FAMILIES, LOBBY, PACES, PIPE_LEAK_EVERY, STAGES, type BuildingType, type Pace } from "../shared/content.ts";
+import { ASK_TICKS, BUILDINGS, CLAIM_SIZE, FAMILIES, LOBBY, PACES, PIPE_LEAK_EVERY, STAGES, type BuildingType, type Pace } from "../shared/content.ts";
 import type { Building, Command, LedgerEntry, RoomState, StageSummary } from "../shared/protocol.ts";
 import { DIRS, claimAt, dirTo, footprint, routeBetween, touching } from "../shared/layout.ts";
 import { applyCommand, bundleOk, claimProblem, createRoom, goodsOk, join, leave, ledgerHolds, newChanges, placementProblem, tick, totalRemaining, type Changes } from "../shared/sim.ts";
@@ -1079,5 +1079,140 @@ describe("saved rooms from before the factory chain", () => {
     econ(m, ch, 3);
     expect(dc.tank ?? 0).toBe(0);
     expect(m.tiles[beside].bt!.n).toBe(1);
+  });
+});
+
+describe("requests for help", () => {
+  const books = (s: RoomState) => structuredClone({ ledger: s.ledger, inventory: s.inventory, goods: s.goods, bank: s.lobby.bank, buildings: s.buildings.map((b) => ({ id: b.id, buf: b.buf, out: b.out, tank: b.tank })) });
+
+  it("can only be raised beside a finished building with a real shortage, in the economy's own words", () => {
+    const { s, ch, f } = factoryRoom();
+    econ(s, ch, 1);
+    expect(f.status).toMatch(/^idle: no metal ore/);
+    const plaza = put(s, ch, "plaza");
+    econ(s, ch, 1);
+    expect(plaza.status).toBe("ok");
+    stand(s, "a", plaza.x, plaza.y);
+    expect(cmd(s, ch, "a", { k: "ask", x: plaza.x, y: plaza.y })).toEqual({ ok: false, reason: "your Plaza isn't short of anything" });
+    const [ex, ey] = freeTile(s);
+    expect(cmd(s, ch, "a", { k: "ask", x: ex, y: ey })).toMatchObject({ ok: false });
+    expect(cmd(s, ch, "a", { k: "ask", x: "1", y: null } as unknown as Command)).toMatchObject({ ok: false });
+    stand(s, "a", f.x + 12, f.y + 12);
+    expect(cmd(s, ch, "a", { k: "ask", x: f.x, y: f.y })).toEqual({ ok: false, reason: "stand beside it to ask for help" });
+    // an unfinished site isn't short of an input, whatever a browser claims
+    const site = put(s, ch, "store");
+    site.work = 0;
+    site.status = "idle: forged by a browser";
+    stand(s, "a", site.x, site.y);
+    expect(cmd(s, ch, "a", { k: "ask", x: site.x, y: site.y })).toMatchObject({ ok: false, reason: expect.stringMatching(/isn't finished/) });
+    expect(s.asks).toEqual([]);
+    stand(s, "a", f.x, f.y);
+    ok(cmd(s, ch, "a", { k: "ask", x: f.x, y: f.y }));
+    expect(s.asks).toEqual([expect.objectContaining({ b: f.id, by: "a", need: f.status })]);
+    expect(s.log.at(-1)!.text).toMatch(/^A asked for help: their own Factory is idle, no metal ore \(needs \d+, has 0\)\.$/);
+    expect(ch.events.at(-1)).toMatchObject({ actor: "a", action: "ask", id: f.id, need: f.status });
+  });
+
+  it("clears itself once the shortage is actually fixed, and moves nothing on the books", () => {
+    const { s, ch, f } = factoryRoom();
+    econ(s, ch, 1);
+    stand(s, "a", f.x, f.y);
+    const before = books(s);
+    ok(cmd(s, ch, "a", { k: "ask", x: f.x, y: f.y }));
+    expect(books(s)).toEqual(before);
+    econ(s, ch, 3);
+    expect(s.asks).toHaveLength(1);
+    // a stranger fixes it: loads the factory, and the economy starts a batch
+    join(s, "b", "tok-b", "B", ch);
+    stand(s, "b", f.x, f.y);
+    ok(cmd(s, ch, "b", { k: "tend", x: f.x, y: f.y }));
+    expect(s.asks).toHaveLength(1); // not until the server sees the machine run
+    ch.events = [];
+    econ(s, ch, 1);
+    expect(f.status).toMatch(/^making/);
+    expect(s.asks).toEqual([]);
+    expect(ch.events).toContainEqual(expect.objectContaining({ actor: "a", action: "ask_cleared", why: "resolved", id: f.id }));
+    expect(ledgerHolds(s)).toBe(true);
+  });
+
+  it("comes down when the shortage becomes a different one, or the building is taken down", () => {
+    const { s, ch, f } = factoryRoom();
+    econ(s, ch, 1);
+    stand(s, "a", f.x, f.y);
+    ok(cmd(s, ch, "a", { k: "ask", x: f.x, y: f.y }));
+    for (const i of s.tiles.map((t, k) => (t.cb ? k : -1)).filter((k) => k >= 0)) delete s.tiles[i].cb;
+    f.buf = { mineral: 12 };
+    f.recipe = "wire";
+    econ(s, ch, 1);
+    expect(f.status).toMatch(/not cabled/);
+    expect(s.asks).toEqual([]);
+    ok(cmd(s, ch, "a", { k: "ask", x: f.x, y: f.y }));
+    expect(s.asks[0].need).toMatch(/not cabled/);
+    ok(cmd(s, ch, "a", { k: "demolish", x: f.x, y: f.y }));
+    tick(s, ch);
+    expect(s.asks).toEqual([]);
+  });
+
+  it("times out if nobody fixes it, a count changing on the way doesn't refresh or clear it, and the books never move", () => {
+    const { s, ch, f } = factoryRoom();
+    econ(s, ch, 1);
+    stand(s, "a", f.x, f.y);
+    ok(cmd(s, ch, "a", { k: "ask", x: f.x, y: f.y }));
+    const until = s.asks[0].until;
+    expect(until - s.tick).toBe(ASK_TICKS);
+    // half the ore it needs: still short of the same thing
+    f.buf = { mineral: 1 };
+    econ(s, ch, 1);
+    expect(f.status).toMatch(/has 1/);
+    expect(s.asks).toHaveLength(1);
+    const before = books(s);
+    ch.events = [];
+    while (s.tick < until - 1) tick(s, ch);
+    expect(s.asks).toHaveLength(1);
+    tick(s, ch);
+    expect(s.asks).toEqual([]);
+    expect(ch.events).toContainEqual(expect.objectContaining({ action: "ask_cleared", why: "expired" }));
+    expect(books(s)).toEqual(before);
+    expect(ledgerHolds(s)).toBe(true);
+  });
+
+  it("is one per player and one per building: asking elsewhere moves yours, and withdrawing takes it down", () => {
+    const { s, ch, f } = factoryRoom();
+    const g = put(s, ch, "furnace");
+    econ(s, ch, 1);
+    expect(g.status).toMatch(/^idle/);
+    join(s, "b", "tok-b", "B", ch);
+    stand(s, "a", f.x, f.y);
+    stand(s, "b", f.x, f.y);
+    ok(cmd(s, ch, "a", { k: "ask", x: f.x, y: f.y }));
+    expect(cmd(s, ch, "a", { k: "ask", x: f.x, y: f.y })).toEqual({ ok: false, reason: "you've already asked for help here" });
+    expect(cmd(s, ch, "b", { k: "ask", x: f.x, y: f.y })).toEqual({ ok: false, reason: "A has already asked for help here" });
+    stand(s, "a", g.x, g.y);
+    ok(cmd(s, ch, "a", { k: "ask", x: g.x, y: g.y }));
+    expect(s.asks.map((a) => [a.by, a.b])).toEqual([["a", g.id]]);
+    ok(cmd(s, ch, "b", { k: "ask", x: f.x, y: f.y }));
+    ok(cmd(s, ch, "a", { k: "unask" }));
+    expect(s.asks.map((a) => [a.by, a.b])).toEqual([["b", f.id]]);
+    expect(cmd(s, ch, "a", { k: "unask" })).toMatchObject({ ok: false });
+  });
+
+  it("belongs to its world: a new stage starts with none, and a saved room from schema 2 loads with none", async () => {
+    const { migrate } = await import("../server/migrate.ts");
+    const { s, ch, f } = factoryRoom();
+    econ(s, ch, 1);
+    stand(s, "a", f.x, f.y);
+    ok(cmd(s, ch, "a", { k: "ask", x: f.x, y: f.y }));
+    const old = JSON.parse(JSON.stringify(s)) as Record<string, unknown>;
+    old.v = 2;
+    delete old.asks;
+    expect(migrate(old, 2).asks).toEqual([]);
+    for (const t of s.tiles) if (t.d) {
+      s.ledger[t.d].remaining -= t.amt;
+      s.ledger[t.d].extracted += t.amt;
+      t.amt = 0;
+    }
+    econ(s, ch, 1);
+    expect(s.phase.k).toBe("transition");
+    expect(s.asks).toEqual([]);
   });
 });

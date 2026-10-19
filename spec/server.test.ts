@@ -322,3 +322,77 @@ describe("the action log", () => {
     }
   }, 30_000);
 });
+
+describe("requests for help", () => {
+  /** Walk next to the nearest deposit of a family and harvest it until the stockpile has n. */
+  async function gather(b: Bot, fam: "matter" | "mineral", n: number): Promise<void> {
+    while (b.snap!.inventory[fam] < n) {
+      const s = b.snap!;
+      const me = s.players[b.you];
+      let best = -1;
+      let bd = Infinity;
+      s.tiles.forEach((t, k) => {
+        const d = Math.hypot((k % s.w) - me.x, Math.floor(k / s.w) - me.y);
+        if (t.d === fam && t.amt > 0 && d < bd) [bd, best] = [d, k];
+      });
+      const [x, y] = [best % s.w, Math.floor(best / s.w)];
+      for (let step = 0; step < 80 && Math.hypot(x - b.snap!.players[b.you].x, y - b.snap!.players[b.you].y) > 1.5; step++) {
+        const p = b.snap!.players[b.you];
+        b.cmd({ k: "move", dx: x - p.x, dy: y - p.y });
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      b.cmd({ k: "move", dx: 0, dy: 0 });
+      await new Promise((r) => setTimeout(r, 150));
+      const id = b.cmd({ k: "harvest", x, y });
+      await b.until((m) => m.t === "ack" && m.id === id);
+      await new Promise((r) => setTimeout(r, 850));
+    }
+  }
+
+  it("reach every open session without a reload, come back on reconnect, and come down for everyone", async () => {
+    const room = await newRoom(baseUrl, "rapid");
+    const a = await joined(baseUrl, room, "Ada");
+    const b = await joined(baseUrl, room, "Bo");
+    await gather(a, "mineral", 8);
+    await gather(a, "matter", 6);
+    // a factory beside Ada, with nothing loaded: short of ore as soon as it's built
+    const s = a.snap!;
+    const me = s.players[a.you];
+    let spot: [number, number] | null = null;
+    for (let r = 1; r < 6 && !spot; r++)
+      for (let dy = -r; dy <= r && !spot; dy++)
+        for (let dx = -r; dx <= r && !spot; dx++) {
+          const [x, y] = [Math.round(me.x) + dx, Math.round(me.y) + dy];
+          const free = [[0, 0], [1, 0], [0, 1], [1, 1]].every(([ox, oy]) => {
+            const t = s.tiles[(y + oy) * s.w + x + ox];
+            return x + ox >= 0 && y + oy >= 0 && x + ox < s.w && y + oy < s.w && t && t.t === 0 && !t.b && !(t.d && t.amt > 0) && !t.cb && !t.pp && !t.bt && !t.pa;
+          });
+          if (free) spot = [x, y];
+        }
+    const [fx, fy] = spot!;
+    const built = a.cmd({ k: "build", x: fx, y: fy, type: "factory" });
+    expect(await a.until((m) => m.t === "ack" && m.id === built)).toMatchObject({ ok: true });
+    await a.until((m) => m.t === "delta" && !!m.buildings?.some((q) => q.x === fx && q.y === fy && q.status.startsWith("idle")), 5000);
+    // a fabricated request for open ground is refused by the server
+    const bogus = a.cmd({ k: "ask", x: fx - 3, y: fy - 3 });
+    expect(await a.until((m) => m.t === "ack" && m.id === bogus)).toMatchObject({ ok: false });
+    const asked = a.cmd({ k: "ask", x: fx, y: fy });
+    const sent = Date.now();
+    expect(await a.until((m) => m.t === "ack" && m.id === asked)).toMatchObject({ ok: true });
+    const seen = (await b.until((m) => m.t === "delta" && !!m.meta?.asks?.length, 1000)) as Delta;
+    expect(Date.now() - sent).toBeLessThan(1000);
+    expect(seen.meta!.asks![0]).toMatchObject({ by: a.you, need: expect.stringMatching(/^idle: no /) });
+    expect(seen.log?.some((l) => /^Ada asked for help: their own Factory is idle, no /.test(l.text))).toBe(true);
+    // Bo refreshes: the request is in the snapshot he comes back to
+    const token = b.token;
+    b.close();
+    await new Promise((r) => setTimeout(r, 200));
+    const back = await joined(baseUrl, room, "Bo", token);
+    expect(back.snap!.asks).toEqual([expect.objectContaining({ by: a.you, b: seen.meta!.asks![0].b })]);
+    // Ada takes the factory down: the request comes down on Bo's screen too
+    a.cmd({ k: "demolish", x: fx, y: fy });
+    await back.until((m) => m.t === "delta" && m.meta?.asks?.length === 0, 2000);
+    a.close();
+    back.close();
+  }, 60_000);
+});

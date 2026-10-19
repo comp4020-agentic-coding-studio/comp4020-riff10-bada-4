@@ -3,8 +3,8 @@
 // guess. All messages are JSON text frames.
 import type { Bundle, BuildingType, Emote, Family, Goods, HarvestMode, Item, LineKind, Pace, Recipe, StageId } from "./content.ts";
 
-export const PROTOCOL_VERSION = 2;
-export const SCHEMA_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
+export const SCHEMA_VERSION = 3;
 export const MAX_MESSAGE_BYTES = 2048;
 
 export type Terrain = 0 | 1 | 2 | 3 | 4; // ground, water/ice, void, stellar core, remnant
@@ -206,6 +206,23 @@ export interface ArchiveEntry {
   fate: string;
 }
 
+/**
+ * A request for help: one player saying a building is short of something.
+ * Pure coordination state, like an emote: it carries nothing and moves no
+ * stock. It stays only while the shortage it names is still the building's
+ * real status, and never past `until` (ADR 0002).
+ */
+export interface Ask {
+  /** the building that's short */
+  b: number;
+  /** who asked */
+  by: string;
+  /** the shortage as the economy worded it when they asked */
+  need: string;
+  at: number;
+  until: number;
+}
+
 export interface LogEntry {
   tick: number;
   text: string;
@@ -240,6 +257,8 @@ export interface RoomState {
   goods: Goods;
   claims: Claim[];
   nextClaimId: number;
+  /** requests for help, at most one per player and one per building */
+  asks: Ask[];
   lobby: Lobby;
   ops: Ops;
   /** cheap-pipe leak accumulator, room-wide: units carried × cheap tiles crossed */
@@ -272,6 +291,8 @@ export type Command =
   | { k: "demolish"; x: number; y: number }
   | { k: "emote"; e: Emote }
   | { k: "mark"; x: number; y: number; name: string }
+  | { k: "ask"; x: number; y: number }
+  | { k: "unask" }
   | { k: "stop"; on: boolean };
 
 export type ClientMsg =
@@ -297,7 +318,7 @@ export interface Delta {
   removed?: number[];
   /** the Green Lobby's agents, whenever any of them moved or changed */
   lobby?: Lobby;
-  meta?: Pick<RoomState, "inventory" | "goods" | "claims" | "ops" | "ledger" | "econ" | "heat" | "reserve" | "phase" | "hostId"> &
+  meta?: Pick<RoomState, "inventory" | "goods" | "claims" | "asks" | "ops" | "ledger" | "econ" | "heat" | "reserve" | "phase" | "hostId"> &
     Partial<Pick<RoomState, "archive" | "history">>;
   log?: LogEntry[];
 }

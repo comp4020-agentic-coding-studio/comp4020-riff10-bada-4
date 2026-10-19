@@ -40,8 +40,9 @@ import {
   type LineKind,
   type Pace,
   type Recipe,
+  ASK_TICKS,
 } from "./content.ts";
-import type { Building, Claim, Command, Ledger, Ops, Player, RoomState, StageSummary, Tile } from "./protocol.ts";
+import type { Ask, Building, Claim, Command, Ledger, Ops, Player, RoomState, StageSummary, Tile } from "./protocol.ts";
 import { SCHEMA_VERSION } from "./protocol.ts";
 import { generateStage } from "./worldgen.ts";
 import { beltDirs, claimAt, footprint, inBounds, lineOwner, linePathProblem, speedAt } from "./layout.ts";
@@ -63,6 +64,7 @@ import {
   takeFrom,
   tileAt,
   workNeeded,
+  isIdle,
   type Changes,
 } from "./world.ts";
 
@@ -146,6 +148,7 @@ export function createRoom(code: string, seed: number, pace: Pace): RoomState {
     goods: emptyGoods(),
     claims: [],
     nextClaimId: 1,
+    asks: [],
     lobby: newLobby(0, ledger),
     ops: emptyOps(),
     leak: 0,
@@ -201,6 +204,7 @@ export function join(s: RoomState, id: string, token: string, name: string, ch: 
     delete s.players[gone.id];
     delete s.tokens[gone.id];
     delete s.receipts[gone.id];
+    s.asks = s.asks.filter((a) => a.by !== gone.id);
   }
   const used = new Set(Object.values(s.players).map((p) => p.colour));
   let colour = 0;
@@ -718,6 +722,32 @@ function mutate(s: RoomState, p: Player, c: Exclude<Command, { k: "move" }>, ch:
       ev("mark", { x: c.x, y: c.y, place: name });
       return OK;
     }
+    case "ask": {
+      // a request for help names a shortage the economy already reported: never one the browser made up
+      const b = buildingOn(s, c.x, c.y);
+      if (!b) return no("nothing built there");
+      const what = `${b.owner === pid ? "your" : `${ownerName(s, b.owner)}'s`} ${buildingName(st, b.type)}`;
+      if (!complete(b)) return no("it isn't finished yet: press E beside it to help");
+      if (!isIdle(b)) return no(`${what} isn't short of anything`);
+      const [cx, cy] = [b.x + (BUILDINGS[b.type].size - 1) / 2, b.y + (BUILDINGS[b.type].size - 1) / 2];
+      if (!near(p, cx, cy, TEND_RANGE + BUILDINGS[b.type].size / 2)) return no("stand beside it to ask for help");
+      const other = s.asks.find((a) => a.b === b.id);
+      if (other) return no(other.by === pid ? "you've already asked for help here" : `${ownerName(s, other.by)} has already asked for help here`);
+      // one request per player: asking again moves yours here
+      const mine = s.asks.find((a) => a.by === pid);
+      if (mine) clearAsk(s, mine, "moved", ch);
+      s.asks.push({ b: b.id, by: pid, need: b.status, at: s.tick, until: s.tick + ASK_TICKS });
+      ch.meta = true;
+      log(s, ch, `${p.name} asked for help: ${b.owner === pid ? `their own ${buildingName(st, b.type)}` : `${ownerName(s, b.owner)}'s ${buildingName(st, b.type)}`} is ${askText(b.status)}.`);
+      ev("ask", { building: b.type, id: b.id, owner: b.owner ?? "", need: b.status, x: b.x, y: b.y });
+      return OK;
+    }
+    case "unask": {
+      const mine = s.asks.find((a) => a.by === pid);
+      if (!mine) return no("you haven't asked for help");
+      clearAsk(s, mine, "withdrawn", ch);
+      return OK;
+    }
     case "stop": {
       if (STAGES[s.stage].id !== "universe") return no("there's always another world, until the last one");
       if (typeof c.on !== "boolean") return no("malformed vote");
@@ -734,6 +764,37 @@ function mutate(s: RoomState, p: Player, c: Exclude<Command, { k: "move" }>, ch:
     }
     default:
       return no("unknown command");
+  }
+}
+
+/** A status as a request reads it: "short of metal ore", without the how-to. */
+export const askText = (status: string): string => {
+  const why = status.replace(/^(idle|unserved|throttled): /, "").replace(/: (load|pipe|belt|collect|fill|build|lay|take).*$/, "");
+  return status.startsWith("throttled") ? `throttled, ${why}` : status.startsWith("unserved") ? `unserved, ${why}` : `idle, ${why}`;
+};
+
+/** What a shortage is, ignoring the counts that change while it lasts ("has 1" becoming "has 2"). */
+const shortageKey = (status: string): string => status.replace(/\([^)]*\)/g, "").replace(/\s+/g, " ").trim();
+
+function clearAsk(s: RoomState, a: Ask, why: "resolved" | "changed" | "expired" | "withdrawn" | "moved" | "gone", ch: Changes): void {
+  s.asks = s.asks.filter((q) => q !== a);
+  ch.meta = true;
+  const p = s.players[a.by];
+  event(ch, a.by, p?.name ?? "someone", "ask_cleared", { id: a.b, why, need: a.need });
+}
+
+/**
+ * Requests are checked against the real building every tick: one whose
+ * shortage is fixed (or has become a different shortage), whose building is
+ * gone, or whose time is up, comes down. Nothing else changes.
+ */
+function sweepAsks(s: RoomState, ch: Changes): void {
+  for (const a of [...s.asks]) {
+    const b = s.buildings.find((q) => q.id === a.b);
+    if (!b) clearAsk(s, a, "gone", ch);
+    else if (!isIdle(b)) clearAsk(s, a, "resolved", ch);
+    else if (shortageKey(b.status) !== shortageKey(a.need)) clearAsk(s, a, "changed", ch);
+    else if (s.tick >= a.until) clearAsk(s, a, "expired", ch);
   }
 }
 
@@ -774,6 +835,7 @@ export function checkRestraint(s: RoomState, ch: Changes): void {
   for (const t of s.tiles) if (t.mark) s.archive.push({ stage: "universe", name: t.mark.name, fate: "is still there" });
   s.archive.push({ stage: "universe", name: `${left} units of the Universe`, fate: "were left alone" });
   s.phase = { k: "ended", how: "restraint" };
+  s.asks = [];
   s.lobby.agents = [];
   for (const p of Object.values(s.players)) p.dx = p.dy = 0;
   log(s, ch, "You stopped. The rest is still out there.");
@@ -800,6 +862,7 @@ function checkExhausted(s: RoomState, ch: Changes): void {
   const summary = summarise(s);
   s.history.push(summary);
   s.phase = { k: "transition", until: s.tick + PACES[s.pace].transitionTicks, summary };
+  s.asks = [];
   s.lobby.agents = [];
   log(s, ch, st.departure);
   event(ch, "room", "room", "stage_spent", { stage: st.id, restored: FAMILIES.reduce((a, f) => a + s.ledger[f].restored, 0), goods: s.ops.goods });
@@ -812,6 +875,7 @@ function nextStage(s: RoomState, ch: Changes): void {
   const leaving = STAGES[s.stage];
   if (s.stage === STAGES.length - 1) {
     s.phase = { k: "ended", how: "consumed" };
+    s.asks = [];
     for (const p of Object.values(s.players)) p.dx = p.dy = 0;
     log(s, ch, "The engine keeps searching for a next frontier. There isn't one.");
     event(ch, "room", "room", "ending", { how: "consumed" });
@@ -832,6 +896,7 @@ function nextStage(s: RoomState, ch: Changes): void {
   s.inventory = { ...st.starter };
   s.goods = emptyGoods();
   s.claims = [];
+  s.asks = [];
   s.ledger = ledgerFor(g.tiles);
   s.lobby = newLobby(s.stage, s.ledger);
   s.ops = emptyOps();
@@ -880,6 +945,7 @@ export function tick(s: RoomState, ch: Changes): void {
     checkExhausted(s, ch);
     if (s.phase.k === "play") lobbyAct(s, ch);
   }
+  if (s.asks.length) sweepAsks(s, ch);
 }
 
 /** Total across families; used by tests and the HUD. */

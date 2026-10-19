@@ -578,6 +578,8 @@ export const HARVEST_RANGE = 2.2; // tiles
 export const BUILD_RANGE = 8; // tiles
 export const HARVEST_COOLDOWN_TICKS = 8;
 export const MARKS_PER_PLAYER = 3;
+/** how long a request for help stays up if nobody fixes the shortage: two minutes of play */
+export const ASK_TICKS = 1200;
 export const SALVAGE_RATE = 0.5;
 /** heat at which collectors throttle to half output (the Sun) */
 export const HEAT_LIMIT = 70;

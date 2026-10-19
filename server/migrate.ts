@@ -48,8 +48,17 @@ export function migrate1to2(raw: Json): RoomState {
   return s;
 }
 
+/** Schema 2 -> 3: requests for help. A saved room has none up. */
+export function migrate2to3(raw: Json): RoomState {
+  const s = raw as unknown as RoomState;
+  s.v = 3;
+  s.asks = [];
+  return s;
+}
+
 export function migrate(raw: Json, from: number): RoomState {
   let s = raw;
   if (from < 2) s = migrate1to2(s) as unknown as Json;
+  if (from < 3) s = migrate2to3(s) as unknown as Json;
   return s as unknown as RoomState;
 }

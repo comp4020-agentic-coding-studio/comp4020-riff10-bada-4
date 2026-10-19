@@ -155,7 +155,7 @@ function flush(r: LiveRoom): void {
   if (ch.removed.length) d.removed = ch.removed;
   if (ch.lobby) d.lobby = s.lobby;
   if (ch.meta) {
-    const meta: NonNullable<Delta["meta"]> = { inventory: s.inventory, goods: s.goods, claims: s.claims, ops: s.ops, ledger: s.ledger, econ: s.econ, heat: s.heat, reserve: s.reserve, phase: s.phase, hostId: s.hostId };
+    const meta: NonNullable<Delta["meta"]> = { inventory: s.inventory, goods: s.goods, claims: s.claims, asks: s.asks, ops: s.ops, ledger: s.ledger, econ: s.econ, heat: s.heat, reserve: s.reserve, phase: s.phase, hostId: s.hostId };
     // the archive and history only ever grow: resend them only when they have
     if (s.archive.length !== r.sentArchive) meta.archive = s.archive;
     if (s.history.length !== r.sentHistory) meta.history = s.history;
