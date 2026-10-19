@@ -792,8 +792,14 @@ function sweepAsks(s: RoomState, ch: Changes): void {
   for (const a of [...s.asks]) {
     const b = s.buildings.find((q) => q.id === a.b);
     if (!b) clearAsk(s, a, "gone", ch);
-    else if (!isIdle(b)) clearAsk(s, a, "resolved", ch);
-    else if (shortageKey(b.status) !== shortageKey(a.need)) clearAsk(s, a, "changed", ch);
+    else if (!isIdle(b) || shortageKey(b.status) !== shortageKey(a.need)) {
+      // the shortage it named is fixed: say so, and if the machine is now stuck on something else, say that too
+      const fixed = !isIdle(b);
+      clearAsk(s, a, fixed ? "resolved" : "changed", ch);
+      const st = STAGES[s.stage];
+      const whose = `${b.owner ? `${ownerName(s, b.owner)}'s` : "The"} ${buildingName(st, b.type)}`;
+      log(s, ch, fixed ? `${whose} isn't short any more: ${s.players[a.by]?.name ?? "someone"}'s request is down.` : `${whose} has what ${s.players[a.by]?.name ?? "someone"} asked for; now it's ${askText(b.status)}.`);
+    }
     else if (s.tick >= a.until) clearAsk(s, a, "expired", ch);
   }
 }

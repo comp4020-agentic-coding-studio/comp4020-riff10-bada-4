@@ -1132,6 +1132,7 @@ describe("requests for help", () => {
     expect(f.status).toMatch(/^making/);
     expect(s.asks).toEqual([]);
     expect(ch.events).toContainEqual(expect.objectContaining({ actor: "a", action: "ask_cleared", why: "resolved", id: f.id }));
+    expect(s.log.some((l) => l.text === "A's Factory isn't short any more: A's request is down.")).toBe(true);
     expect(ledgerHolds(s)).toBe(true);
   });
 
@@ -1146,6 +1147,7 @@ describe("requests for help", () => {
     econ(s, ch, 1);
     expect(f.status).toMatch(/not cabled/);
     expect(s.asks).toEqual([]);
+    expect(s.log.at(-1)!.text).toBe("A's Factory has what A asked for; now it's idle, no power: not cabled to a generator.");
     ok(cmd(s, ch, "a", { k: "ask", x: f.x, y: f.y }));
     expect(s.asks[0].need).toMatch(/not cabled/);
     ok(cmd(s, ch, "a", { k: "demolish", x: f.x, y: f.y }));
