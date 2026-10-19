@@ -62,7 +62,10 @@ kbd { background: var(--paper-2); border: 1px solid var(--line); border-radius: 
 .stocks .bar span { display: block; height: 100%; }
 .stocks .num { text-align: right; font-variant-numeric: tabular-nums; }
 .swatch { display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 50%; border: 1px solid var(--line); margin-right: 0.35rem; vertical-align: -1px; }
-.roster li.away { opacity: 0.6; }
+.roster li.away { color: #5e5666; }
+.roster li.away .swatch { opacity: 0.6; }
+.roster .ask { display: block; font-size: 0.76rem; margin-left: 1.05rem; max-width: 17rem; }
+.ask-row button { font-size: 0.78rem; }
 .code { font-family: ui-monospace, monospace; font-size: 1.05rem; letter-spacing: 0.08em; }
 .dot { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: #999; }
 .dot.live { background: #3a9b5c; }

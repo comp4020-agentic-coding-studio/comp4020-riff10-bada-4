@@ -28,8 +28,8 @@ import {
   type Item,
   type LineKind,
 } from "../shared/content.ts";
-import type { Building, RoomState, Snapshot } from "../shared/protocol.ts";
-import { averageLife, buildCost, shortfalls } from "../shared/sim.ts";
+import type { Ask, Building, RoomState, Snapshot } from "../shared/protocol.ts";
+import { askText, averageLife, buildCost, shortfalls } from "../shared/sim.ts";
 import { nextRecipe, powerNeed, recipeOf } from "../shared/economy.ts";
 import { lobbyTarget } from "../shared/lobby.ts";
 import { claimAt, footprint, route } from "../shared/layout.ts";
@@ -197,6 +197,9 @@ export default function Game({ room, name }: { room: string; name: string }): Re
       } else if (k === "f") {
         e.preventDefault();
         quickTend();
+      } else if (k === "r") {
+        e.preventDefault();
+        quickAsk();
       } else if (k === "c") setTool("claim");
       else if (k === "l") pickLine(viewRef.current.line?.kind ?? "cable");
       else if (k === "m") {
@@ -284,6 +287,19 @@ export default function Game({ room, name }: { room: string; name: string }): Re
     }
     if (best) c.send({ k: "tend", x: best.x, y: best.y });
     else c.toast("Nothing to load or collect in reach: stand beside a factory, harvester, pump or tank.", "bad");
+  }
+
+  /** Ask for help with the short machine beside you, or take your request down if it's this one. */
+  function quickAsk(): void {
+    const c = client;
+    const st = c?.state;
+    if (!c || !st) return;
+    const b = askable(st, c.me.x, c.me.y);
+    const mine = st.asks.find((a) => a.by === c.you);
+    if (b && mine?.b === b.id) c.send({ k: "unask" });
+    else if (b) c.send({ k: "ask", x: b.x, y: b.y });
+    else if (mine) c.send({ k: "unask" });
+    else c.toast("Nothing short beside you to ask for help with: stand beside a machine showing “!”.", "bad");
   }
 
   function zoomBy(k: number): void {
@@ -631,11 +647,67 @@ function RoomPanel({ s, client, host }: { s: Snapshot; client: GameClient; host:
                 {p.id === client.you ? " (you)" : ""}
                 {s.hostId === p.id ? " · host" : ""}
                 {p.connected ? "" : " · away"}
+                {askOf(s, p.id)}
               </li>
             ))}
         </ul>
         {host && <p className="small">You're the host: you can take down anyone's buildings.</p>}
       </div>
+  );
+}
+
+/** The short machine within load range of a spot, nearest first: what R asks about. */
+function askable(s: Snapshot, x: number, y: number): Building | null {
+  let best: Building | null = null;
+  let bd = Infinity;
+  for (const b of s.buildings) {
+    if (!complete(b) || !isIdle(b)) continue;
+    const def = BUILDINGS[b.type];
+    const h = (def.size - 1) / 2;
+    const d = Math.hypot(b.x + h - x, b.y + h - y);
+    if (d <= TEND_RANGE + def.size / 2 && d < bd) [bd, best] = [d, b];
+  }
+  return best;
+}
+
+/** One line under a player's name: what they've asked the room for, as the machine says it now. */
+function askOf(s: Snapshot, pid: string): ReactNode {
+  const a = s.asks.find((q) => q.by === pid);
+  const b = a && s.buildings.find((q) => q.id === a.b);
+  if (!a || !b) return null;
+  const st = STAGES[s.stage];
+  const owner = b.owner === pid ? "their" : b.owner ? `${s.players[b.owner]?.name ?? "someone"}'s` : "the";
+  return (
+    <span className="ask">
+      <span aria-hidden="true">⚑ </span>
+      asks for help: {owner} {buildingName(st, b.type)} is {askText(b.status)}
+    </span>
+  );
+}
+
+function AskRow({ s, b, youId, send }: { s: Snapshot; b: Building; youId: string; send: (c: import("../shared/protocol.ts").Command) => void }): ReactNode {
+  const a: Ask | undefined = s.asks.find((q) => q.b === b.id);
+  if (a) {
+    const who = a.by === youId ? "You" : (s.players[a.by]?.name ?? "Someone");
+    const secs = Math.max(0, Math.ceil((a.until - s.tick) / 10));
+    return (
+      <p className="small ask-row">
+        <span aria-hidden="true">⚑ </span>
+        {who} asked the room for help with this, {secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`} left. It comes down by itself once it isn't short.
+        {a.by === youId && (
+          <>
+            {" "}
+            <button type="button" onClick={() => send({ k: "unask" })}>Take request down (R)</button>
+          </>
+        )}
+      </p>
+    );
+  }
+  if (!isIdle(b)) return null;
+  return (
+    <p className="small ask-row">
+      <button type="button" onClick={() => send({ k: "ask", x: b.x, y: b.y })}>Ask the room for help (R)</button> puts a ⚑ on it for everyone until it isn&apos;t short. Stand beside it.
+    </p>
   );
 }
 
@@ -950,6 +1022,7 @@ function Inspect({ s, b, youId, host, send, onClose }: { s: Snapshot; b: Buildin
       <p>
         Status: <strong>{done ? (b.status === "ok" ? "running" : b.status) : `${b.status} (${Math.round((b.work / need) * 100)}%): press E beside it to help`}</strong>
       </p>
+      {done && <AskRow s={s} b={b} youId={youId} send={send} />}
       {b.legacy && <p className="small">From before the factory chain: on the old shared grid, cooled from the stockpile.</p>}
       <p className="small">Per tick: {io.join(" · ") || "nothing"}</p>
       {b.kit && def.kit && <p className="small">Kit: {def.kit}.</p>}
@@ -1045,7 +1118,7 @@ function Help({ onClose, st }: { onClose: () => void; st: (typeof STAGES)[number
           <li><kbd>F</kbd>: load the factory beside you from the shared stockpile and collect what it made; collect a harvester's hopper or a pump's tank; fill a datacentre's or dome's tank.</li>
           <li><kbd>L</kbd>: lay a line. Click its start, then its end. Cables carry power (a grid only has what its own generators make), pipes carry coolant from a pump, belts carry items toward their arrow, paths are quicker to walk on. <kbd>G</kbd> shows them all.</li>
           <li><kbd>C</kbd>: claim a {CLAIM_SIZE}×{CLAIM_SIZE} plot (up to {CLAIMS_PER_PLAYER}). A datacentre has to sit inside your own claim; nobody else can build or take things down there, but anyone can walk, harvest and connect.</li>
-          <li><kbd>I</kbd> inspect (recipes, upgrades, why it's idle) · <kbd>X</kbd> take down a building or a line tile (half back, plus whatever it held) · <kbd>N</kbd> name a place · <kbd>V</kbd> survey · <kbd>P</kbd> photo · <kbd>Shift</kbd>+<kbd>1</kbd>–<kbd>6</kbd> emote.</li>
+          <li><kbd>I</kbd> inspect (recipes, upgrades, why it's idle) · <kbd>X</kbd> take down a building or a line tile (half back, plus whatever it held) · <kbd>N</kbd> name a place · <kbd>R</kbd> beside a machine showing “!”: ask the room for help with it (again to take it down) · <kbd>V</kbd> survey · <kbd>P</kbd> photo · <kbd>Shift</kbd>+<kbd>1</kbd>–<kbd>6</kbd> emote.</li>
         </ul>
         <p>The chain on every world: gather, house workers, power, a factory, parts, a claim, a datacentre, then harvesters and belts so nobody has to carry everything. Rushing is quicker and wastes more; efficient kits and careful harvesting take setup and last longer.</p>
         <p>The Green Lobby walks the land too, putting stock back from a seed bank that runs out, and picketing datacentre sites for a while.</p>

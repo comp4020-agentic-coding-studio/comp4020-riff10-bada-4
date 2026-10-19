@@ -5,7 +5,7 @@
 // lose life), so every asset is code in this file and replaceable in one place.
 import { BUILDINGS, CLAIM_SIZE, LINES, STAGES, itemLabel, type BuildingType, type Family, type LineKind, type StageDef } from "../shared/content.ts";
 import type { Building, Lobbyist, Player, Snapshot, Tile } from "../shared/protocol.ts";
-import { averageLife, buildCost, claimProblem, effectiveLife, lifeCap, placementProblem, shortfalls } from "../shared/sim.ts";
+import { askText, averageLife, buildCost, claimProblem, effectiveLife, lifeCap, placementProblem, shortfalls } from "../shared/sim.ts";
 import { DIRS, claimAt, linePathProblem, route } from "../shared/layout.ts";
 import { complete, isIdle, isRunning } from "../shared/world.ts";
 import type { RoomState } from "../shared/protocol.ts";
@@ -271,6 +271,7 @@ export class Renderer {
     items.sort((a, b) => a.depth - b.depth);
     for (const it of items) it.draw();
     this.claims(s, true);
+    this.asks(s, visible);
     if (this.hint) this.label(this.hint.text, this.hint.x, this.hint.y, "#fffbe0", 12);
     this.hint = null;
 
@@ -284,6 +285,37 @@ export class Renderer {
     if (this.view.survey) this.surveyArrow(s, st, anim);
     this.vignette(s);
     this.frameMs = this.frameMs * 0.9 + (performance.now() - t0) * 0.1;
+  }
+
+  /**
+   * Requests for help, drawn after every object so nothing covers them: a
+   * small flag in the asker's colour on the building and one line of text.
+   * No motion of its own; it goes when the server takes the request down.
+   */
+  private asks(s: Snapshot, visible: (x: number, y: number, pad?: number) => boolean): void {
+    const ctx = this.ctx;
+    const z = this.cam.zoom;
+    for (const a of s.asks) {
+      const b = s.buildings.find((q) => q.id === a.b);
+      if (!b || !visible(b.x, b.y, 140)) continue;
+      const n = BUILDINGS[b.type].size;
+      const [T, , B] = this.corners(b.x, b.y, n);
+      const [cx, cy] = [(T[0] + B[0]) / 2, (T[1] + B[1]) / 2];
+      const top = cy - BUILD_LOOK[b.type].h * z;
+      const who = s.players[a.by];
+      const col = PLAYER_COLOURS[(who?.colour ?? 7) % PLAYER_COLOURS.length];
+      const fx = cx + 16 * z;
+      const fy = top - 8 * z;
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = "#3a2c2c";
+      ctx.lineWidth = 2 * z;
+      ctx.beginPath();
+      ctx.moveTo(fx, fy + 12 * z);
+      ctx.lineTo(fx, fy - 14 * z);
+      ctx.stroke();
+      this.poly([[fx, fy - 14 * z], [fx + 13 * z, fy - 9 * z], [fx, fy - 4 * z]], col, "#3a2c2c");
+      this.label(`⚑ ${who?.name ?? "someone"} asks: ${askText(b.status).replace(/^idle, /, "")}`, cx, top - 44 * z, "#fffbe0", 11, col);
+    }
   }
 
   private corners(x: number, y: number, n = 1): [number, number][] {
